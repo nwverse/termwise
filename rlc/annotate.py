@@ -45,10 +45,16 @@ class Annotator:
             return True, True
         if self.store.is_known(*forms):
             return False, False
+        if e.hard is not None:
+            return e.hard, e.starred
         if e.rank == 0:
             # 未收录词频：带中考 / 高考 / 四级标签的是基础词，其余多为生僻词或术语
             return not any(t in BASIC_TAGS for t in e.tags.split()), False
         return e.rank > self.threshold, False
+
+    def prefetch(self, plains: list[str]):
+        """一批行的词一次查完（Relingo 模式下即一次请求），之后逐行 hits() 只读缓存。"""
+        self.lex.lookup({w.norm for p in plains for w in extract_words(p)})
 
     def hits(self, plain: str) -> list[Hit]:
         words = extract_words(plain)

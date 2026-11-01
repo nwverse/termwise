@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/linshengtao/.local/bin/rlc codex-hook",
+            "timeout": 30,
+            "statusMessage": "rlc：查回复里的生词"
+          }
+        ]
+      }
+    ]
+  }
+}

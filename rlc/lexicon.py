@@ -1,7 +1,6 @@
 """词库层：Lexicon 接口 + 基于 ECDICT 的本地实现。
 
-以后接 Relingo 服务端（parseContent3）时，只需再实现一个 Lexicon，
-上层的分词 / 渲染不用动。
+Relingo 服务端实现见 relingo.py；上层的分词 / 渲染只认 Lexicon 接口。
 """
 
 import csv
@@ -27,6 +26,11 @@ class Entry:
     rank: int           # 有效词频排名，0 表示未收录（通常是生僻词 / 术语）；
                         # 前缀派生词取词根排名（unused 按 used 算）
     tags: str
+    # 由词库直接给出的判定：None 表示按 rank 和难度阈值判断（本地词库）；
+    # Relingo 返回的词为 True（服务端已按级别和个人已掌握词过滤）
+    hard: Optional[bool] = None
+    starred: bool = False
+    source: str = "local"
 
 
 class Lexicon(Protocol):

@@ -1,6 +1,6 @@
 # relingo-code：Relingo 的 code mode（终端 / Ghostty）设计
 
-> 状态：调研 + 方案 + 最小原型（`bin/rlc`）。日期 2026-11-01。
+> 状态：M0–M2 已完成，主线已切换为方案 A（Relingo 服务端），本地 ECDICT 兜底。日期 2026-11-01。
 
 ## 0. 目标
 
@@ -112,7 +112,7 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
   4. 每次标注都要联网，终端输出量大，请求频率可能触发风控；终端内容（可能包含内部代码、日志）会被发到第三方服务器，`x-relingo-referrer` 也会暴露上下文；
   5. 可能占用 Pro 额度。
 
-### 方案 B：本地词库 + 可选 LLM，只同步 Relingo 的个人词库（推荐）
+### 方案 B：本地词库 + 可选 LLM，只同步 Relingo 的个人词库（最初推荐；现在作为兜底）
 
 - 词典与难度：本地 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT 协议，77 万词条，提供中文释义、COCA/BNC 词频、考试标签和 exchange 词形）。构建成 sqlite 后约 37MB，查询在毫秒级。
 - 个人词库：本地 `known.txt` / `star.txt`。用 Relingo 选项页导出的 CSV 导入（`rlc import-relingo`），**不调任何接口**；也可以在终端里直接维护（`rlc known/star`）。
@@ -127,64 +127,98 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 
 默认走方案 B。用户显式开启后，加一个可插拔的 `RelingoLexicon` adapter，只做两件低频的事：定时（比如每天一次）拉取个人词库（`getUserVocabulary`），以及可选地把终端里新加入生词本的词回写。实时标注仍然完全在本地完成，把对非公开接口的依赖压到最小。
 
-## 4. 推荐
+## 4. 决策与当前方案（2026-11-01 更新）
 
-**采用方案 B**，代码按方案 C 预留 adapter 接口（`rlc/lexicon.py` 里的 `Lexicon` Protocol）。是否启用 Relingo 接口由用户决定，见第 7 节。
+用户决定：**主线走方案 A**，由 Relingo 服务端判生词、给释义，和浏览器里的级别、已掌握保持一致；本地 ECDICT 只在离线或接口失败时兜底。只做单词释义，不做整句翻译，不接 LLM。难度做成配置项，默认中级。
 
-Ghostty 集成从轻到重分四档：
+### 4.1 Relingo 接入（`rlc/relingo.py`）
 
-1. **管道**：`cmd 2>&1 | rlc`。零配置，可以流式处理。
-2. **事后分析屏幕**：输入 `rlc --list `，按 Ghostty 默认的 `⌘⇧J`（`write_screen_file:paste,plain`）把屏幕文本文件路径粘进来，再回车。不需要授权，也不碰剪贴板。可以加一个 keybind 省掉手动输入：
+- **请求**：`POST /api/parseContent3`，body 为 `{words, to: "zh", level}`，只含**去重后的小写词表**。不发送行文本、文件路径和 `x-relingo-referrer`。
+  - 默认只发本地词典里查得到的词（`only_dictionary_words`），项目代号、内部标识符这类词不会发出去。
+  - 请求头带 `x-relingo-version`（读本机已装扩展的版本号）、`x-relingo-platform: extension`，有 token 时再带 `x-relingo-token`。
+  - User-Agent 写明 `rlc/0.2 (relingo-code terminal client)`。Python 默认的 UA 会被 Cloudflare 拦截（error 1010）。
+- **实测（2026-11-01）**：
+  - 不带 token 也能调通，服务端按级别只返回生词（`the` 不返回），字段有 `word, lemma, phonetic{us,uk}, translations[{pos,target}], wordFrequency`。
+  - `vocabularyTest` 返回四个级别：`relingo-Beginner / Intermediate / Advanced / Proficient`，分别对应配置里的 `basic / intermediate / advanced / expert`。
+  - **带 token 的请求还没验证**：要等用户执行 `rlc auth login`。预期返回结果会多出 `mastered / strange / stared` 字段，rlc 按扩展的规则判定是否高亮：`!mastered && !(strange && !stared)`。
+- **token**：存在 macOS 钥匙串（service `rlc-relingo`）。
+  - 写入时经 `security -i` 的 stdin 传进去，不出现在进程参数里。
+  - 不落文件、不打印；`rlc auth status` 只显示打码后的邮箱。
+  - 获取方式见 README：在扩展选项页的 DevTools 里执行一行代码把 token 复制到剪贴板，再运行 `rlc auth login`。rlc 读完剪贴板后会立即清空它。
+  - token 失效（`illegal user token` 或 code 2001/2002）时提示一次，然后改用未登录模式。
+- **缓存**：`data/relingo-cache.db`，按「级别 + 是否登录」分开存。
+  - 「不是生词」的结果也缓存，默认有效 12 小时（`cache_ttl_hours`）。在浏览器里新标的已掌握词，最多 12 小时同步到终端；`rlc cache clear` 可以立即生效。
+- **限频**：同一批行只发一次请求。管道模式按停顿约 150ms，或最多 1 秒、200 行，攒成一批。两次请求至少间隔 2 秒，这个限制跨进程生效。
+- **退避**：遇到网络错误、HTTP 5xx 或 429，退避 30 秒，每次翻倍，最长 30 分钟，状态跨进程共享。退避期间完全不发请求，直接用 ECDICT，并提示一次。
+- **补充**：
+  - 服务端没返回、本地又判定为计算机术语的词（本地无词频、无考试标签、只有 `[计]` 义项，比如 idempotent），用本地释义补上。Relingo 词库本身不收录这类词，补上它们不会和你的已掌握词冲突（`local_jargon`）。
+  - 本地的 `known / star` 和开发者白名单叠加在 Relingo 结果之上。
+- **配置**：`~/.config/rlc/config.toml`（`rlc config init` 生成），可配 `source`（relingo/local）、`level`、`devwords` 和 `[relingo]` 下的各项。
 
-   ```ini
-   # 只负责输入 "rlc --list "（\x20 是结尾空格，Zig 字符串语法），之后仍要按 ⌘⇧J 和回车。
-   # 已通过 ghostty +validate-config 校验，还没在 Ghostty 里实际按过
-   keybind = super+shift+l=text:rlc --list\x20
-   ```
-3. **quick terminal 当查词面板**：在选区上按 ⌘C，然后呼出 quick terminal 运行 `rlc clip`。（以上 2–4 档都还没在 Ghostty 里实测，见第 2 节的实测记录）
+### 4.2 Ghostty 集成（已写入用户配置）
 
-   ```ini
-   keybind = global:super+grave_accent=toggle_quick_terminal
-   quick-terminal-position = right
-   ```
-4. **AppleScript**：`rlc screen [--scrollback|--selection]` 从当前终端直接取文本。需要授权，并且会临时占用剪贴板（只能还原纯文本）。后续可以用 Hammerspoon 或快捷指令绑定全局热键，通过 AppleScript `split … with configuration {command: "rlc screen; read"}` 开一个分屏显示结果。
+原配置文件为空，备份在 `config.ghostty.bak-20261101`。新增的快捷键已用 `ghostty +validate-config` 校验通过：
 
-## 5. MVP 范围（本次原型已实现）
-
-`bin/rlc`，Python 3 标准库实现，无第三方依赖：
-
-- 默认模式 `cmd | rlc`：逐行读取，实时处理；原行原样输出，有生词时在下方加一行 `↳ 词 释义 · …`；同一个生词默认只注释第一次（`-a` 关闭去重）；只在 TTY 下上色，并且只有原行不含 ANSI 时才给生词加下划线。
-- `--list`：输出去重后的生词表。`--json`：每个生词输出一行 JSON，方便其他工具集成。
-- `rlc screen`、`rlc clip`、`rlc lookup`、`rlc known/star/forget`、`rlc import-relingo`、`rlc build-db`。
-- code mode 处理：
-  - 去掉 ANSI/OSC 转义；
-  - 跳过 URL、路径、文件名、flag、hash、版本号、`$VAR`、行内代码、单引号数据、缩写形式；
-  - 全大写短词视为缩写，跳过；
-  - 拆分 camelCase、snake_case、kebab-case；
-  - 内置开发者常用词白名单（`rlc/devwords.txt`）；
-  - 释义优先附上 `[计]` 义项（如 latency：潜伏｜[计] 传输延迟）。
-- 难度判定：
-  - 优先级：生词本 > 已掌握或白名单 > 词频阈值；
-  - 档位：`basic=3000`、`intermediate=6000`（默认）、`advanced=10000`、`expert=20000`，也可以直接写数字；
-  - 屈折变化按原形算（deprecated → deprecate）；
-  - 前缀派生词按词根算（unused 看 used 的词频）；
-  - 没有词频的词：带 zk/gk/cet4 标签的视为基础词，其余视为生词。
-
-## 6. 里程碑
-
-| 阶段 | 内容 |
+| 快捷键 | 动作 |
 |---|---|
-| M0（完成） | 调研、设计文档、`rlc` CLI 原型 |
-| M1 | 调整默认档位和白名单，减少噪音；`rlc` 打包安装（`pipx` 或单文件）；决定 `rlc screen` 是否值得保留；在 Ghostty 里实测 keybind 片段 |
-| M2 | 常驻 TUI 面板（quick terminal 或分屏）：显示最近的生词，按键标记已掌握或加入生词本，展示例句；Hammerspoon / 快捷指令一键开分屏 |
-| M3 | 接入 Claude Code：通过 hook（比如 Stop hook 读取 transcript）把 Agent 回复中的生词汇总到面板。动手前要先核实 hook 的输入字段 |
-| M4 | 可选 LLM：选中一句话后给出翻译和上下文释义，结果缓存 |
-| M5（可选，需要授权） | `RelingoLexicon` adapter：低频同步个人词库，可选回写 |
+| ⌘⇧L | `text:rlc --list ` → `write_screen_file:paste,plain` → 回车：列出当前屏幕上的生词（要在 shell 提示符下按） |
+| ⌘⌥⇧L | 同上，范围是整个 scrollback |
+| ⌘⌃L | 在右侧开分屏，运行 `rlc history -f`，持续显示 Claude Code / Codex 回复里的生词 |
+
+`rlc` 通过 `~/.local/bin/rlc` 符号链接放进了 PATH。管道用法 `cmd 2>&1 | rlc` 不变。`rlc screen`（AppleScript）仍是可选功能，没有绑定快捷键。
+
+## 5. Agent 集成：Claude Code 与 Codex
+
+两者共用 rlc 核心：
+
+- `rlc agent --name <agent> --format json|text`：从 stdin 读回复，去掉 fenced 代码块后列出生词，结果追加到 `data/agent-words.jsonl`。
+- `rlc history [-f]`：读取这份历史，适合放在 Ghostty 分屏里看，两个 Agent 共用。
+
+### 5.1 Claude Code mod：`integrations/claude-code/relingo-words`
+
+基于 Claude Code 的 function-hooks 插件：`.claude-plugin/plugin.json` 加上 `hooks/register.tsx`。
+
+- **触发**：`turn.complete` 事件里的 `e.answer` 就是主循环本轮的最终回复，跳过子 agent、空回复和被中断的回复。
+  - 在 hook 返回之后才异步执行 `$.process.run(['/usr/bin/env', rlc, 'agent', ...], { stdin: answer })`，不阻塞对话。
+- **展示**：
+  - **侧边 pane「生词」**：列出最近 5 条回复的生词。会话开始时自动打开，终端宽度不小于 144 列时停靠在侧边。也可以用 `/relingo` 打开、`/relingo close` 关闭。每个词前有一个 ✓ 按钮，点了会执行 `rlc known <词>`，之后不再显示这个词。
+  - **提示栏上方一行**：最新回复的生词摘要，按宽度截断。窄终端下 pane 停靠不了，这一行能保证回复后总能看到生词。`/relingo band` 切换显示，点 × 隐藏。
+- **状态**：存在 `$.state`（`turns`、`known`、`isBandHidden`），热重载后保留。
+- **配置项**（`userConfig`）：`rlcPath`（默认 `rlc`，经 `/usr/bin/env` 从 PATH 查找）、`autoOpenPane`。
+- **验证**：`claude plugin validate` 通过，`tsc` 类型检查通过，`claude plugin test` 2 个用例通过（回复 → 调 rlc → pane 和提示栏渲染；忽略子 agent、空回复、中断）。
+- **加载**：开发期放在本会话的 dev-mods 目录，通过符号链接指向仓库。需要用户在 Claude Code 弹出的「Turn on the mods…」里选择开启。
+  - 长期使用的话，可以在仓库加 `.claude-plugin/marketplace.json`，再用 `claude plugin marketplace add <repo>` 和 `claude plugin install relingo-words` 安装。
+
+### 5.2 Codex：`integrations/codex`
+
+调研结论：本机 Codex 是 ChatGPT.app 自带的 `codex-cli 0.163.0-alpha`，`hooks` 已是 stable 功能。
+
+| 机制 | 适合度 |
+|---|---|
+| `Stop` hook（`~/.codex/hooks.json` 或 `[hooks]`） | **采用**。stdin JSON 里有 `last_assistant_message`；输出 `{"systemMessage": "..."}` 会作为提示显示在 TUI 里 |
+| `notify` | 不采用。只能配置一条命令，已经被 ChatGPT 的 Computer Use 助手占用；而且是事后单独起进程，没法在 TUI 里显示内容 |
+| MCP / skills / 自定义 prompt | 只有模型能调用，不能在每轮回复后自动触发 |
+| `tui.status_line` | 只能放内置条目，不能放自定义文本（未完全确认） |
+
+- **实现**：`rlc codex-hook` 读 hook JSON，对 `last_assistant_message` 运行 `rlc agent`，输出一行 `systemMessage`（最多 12 个词，多出的显示「…另有 N 个」）。同时写入共享历史，所以 Ghostty 里 ⌘⌃L 打开的分屏也能看到。
+  - 出任何错都静默退出（exit 0，不输出），保证不打断 Codex。
+- **安装**：`integrations/codex/install.sh` 会把 `hooks.json` 复制到 `~/.codex/hooks.json`；文件已存在时不覆盖。之后要在 Codex 里运行 `/hooks` 审核并信任这个 hook，因为非托管的 hook 必须先被信任才会运行。
+  - **还没安装**：修改 `~/.codex` 不在这次的授权范围内，安装操作被权限拦了，等用户确认。
+- **未验证**：多行或较长的 `systemMessage` 在 TUI 里怎么显示；`codex exec` 下 `Stop` 是否也会触发。
+
+## 6. 范围与里程碑
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| M0 | 调研、设计文档、`rlc` CLI 原型（本地词库） | 完成 |
+| M1 | Relingo 服务端接入：钥匙串 token、缓存、限频、退避、本地兜底；配置文件；Ghostty 快捷键 | 完成（带 token 的路径待用户登录后验证） |
+| M2 | Claude Code mod（pane + 提示栏上方一行）、Codex Stop hook、共享历史分屏 | 完成（Codex hook 待安装） |
+| M3 | 回写 Relingo：在 pane 或终端里标的已掌握 / 生词本同步回 Relingo（`submitVocabulary`，需要先拿到 masterID / currentBookID） | 待决定 |
+| M4 | `rlc` 打包安装；mod 发布为本地 marketplace；按实际使用调整白名单和 `local_jargon` 规则 | 待做 |
 
 ## 7. 待决策
 
-1. 是否接受方案 B 作为主线？是否授权做方案 A 或 C 的 Relingo 接口同步？如果授权，token 由你手动提供（推荐），而不是从 Chrome 存储里读。
-2. LLM：句子翻译要不要做，用哪家模型？默认不发送任何终端内容。
-3. 默认难度档位（目前 intermediate，即词频排名 6000）。
-4. 是否允许我修改你的 Ghostty 配置（目前为空），还是只在文档里给出配置片段。
-5. 词库和个人数据放在哪：目前放在仓库的 `data/`（已 gitignore），可以用 `RLC_DATA` 修改；也可以改成 `~/.local/share/rlc`。
+1. 执行 `rlc auth login` 登录，然后用 `rlc auth status` 验证。登录后我再确认带 token 的返回字段（`mastered` 等），以及是否需要 cookie。
+2. 是否把 pane 里的 ✓（已掌握）回写到 Relingo（M3）？目前只写本地词库。
+3. 是否安装 Codex hook（`integrations/codex/install.sh`），之后在 Codex 里用 `/hooks` 信任它。
+4. 缓存有效期默认 12 小时是否合适（越短越及时，请求也越多）。

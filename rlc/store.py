@@ -28,13 +28,13 @@ def _read_list(path: str) -> set[str]:
 
 
 class UserStore:
-    def __init__(self, root: str | None = None):
+    def __init__(self, root: str | None = None, devwords: bool = True):
         self.root = os.path.join(root or data_dir(), "user")
         self.known_path = os.path.join(self.root, "known.txt")
         self.star_path = os.path.join(self.root, "star.txt")
         self.known = _read_list(self.known_path)
         self.star = _read_list(self.star_path)
-        self.dev = _read_list(DEV_WORDS)
+        self.dev = _read_list(DEV_WORDS) if devwords else set()
 
     def is_known(self, *forms: str) -> bool:
         return any(f in self.known or f in self.dev for f in forms if f) and not self.is_star(*forms)

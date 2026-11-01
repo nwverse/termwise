@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 .DS_Store
+# Claude Code 加载 mod 时生成的类型声明
+integrations/claude-code/*/.claude-plugin/types/

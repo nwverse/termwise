@@ -1,0 +1,20 @@
+{
+  "name": "relingo-words",
+  "version": "0.1.0",
+  "description": "Lists hard English words (Relingo levels / your Relingo wordbook) with Chinese meanings from each Claude reply, in a side pane and a band above the prompt. Uses the rlc CLI.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "rlcPath": {
+      "type": "string",
+      "title": "rlc command",
+      "description": "rlc executable (name on PATH or absolute path)",
+      "default": "rlc"
+    },
+    "autoOpenPane": {
+      "type": "boolean",
+      "title": "Open pane on start",
+      "description": "Open the vocabulary pane when the session starts (only docks on wide terminals)",
+      "default": true
+    }
+  }
+}

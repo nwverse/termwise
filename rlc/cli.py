@@ -1,32 +1,48 @@
-"""rlc —— Relingo code mode 原型：在终端文本里标出生词并给释义。
+"""rlc —— Relingo code mode：在终端 / Agent 回复里标出生词并给释义。
 
   cmd | rlc                  逐行透传，有生词的行下方加一行释义
   rlc --list < file          只输出去重后的生词表
   rlc screen [--scrollback]  读当前 Ghostty 终端的屏幕 / scrollback 并列出生词
   rlc clip                   对剪贴板内容列出生词
   rlc lookup WORD...         查词
-  rlc known|star|forget W..  维护个人词库
-  rlc import-relingo F.csv   导入 Relingo 导出的生词本 CSV
+  rlc agent [--name N]       给 Agent 回复用：去掉代码块后列生词，并记入历史
+  rlc history [-f]           查看 / 跟随 Agent 回复的生词历史（适合放在分屏里）
+  rlc codex-hook             Codex Stop hook 入口
+  rlc auth login|status|logout   Relingo 账号 token（存 macOS 钥匙串）
+  rlc config init|show|path  配置文件 ~/.config/rlc/config.toml
+  rlc cache clear            清空 Relingo 结果缓存
+  rlc known|star|forget W..  本地个人词库（叠加在 Relingo 结果之上）
+  rlc import-relingo F.csv   导入 Relingo 导出的 CSV
   rlc build-db ecdict.csv    构建本地词库
 """
 
 import argparse
+import json
 import os
+import re
+import select
 import subprocess
 import sys
+import time
 
 from . import annotate as A
+from . import config as C
 from .lexicon import EcdictLexicon, build_db
-from .store import UserStore, db_path
+from .store import UserStore, data_dir, db_path
 from .textproc import strip_ansi
 
-COMMANDS = {"annotate", "screen", "clip", "lookup", "known", "star", "forget",
-            "import-relingo", "build-db"}
+COMMANDS = {"annotate", "screen", "clip", "lookup", "agent", "history", "codex-hook", "auth",
+            "config", "cache", "known", "star", "forget", "import-relingo", "build-db"}
+
+FENCE_RE = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.S | re.M)
 
 
 def _add_view_opts(p: argparse.ArgumentParser):
-    p.add_argument("-l", "--level", default=os.environ.get("RLC_LEVEL", "intermediate"),
-                   help="难度：basic|intermediate|advanced|expert 或词频排名阈值（默认 intermediate=6000）")
+    p.add_argument("-l", "--level", default=None,
+                   help="难度 basic|intermediate|advanced|expert（默认取配置，缺省 intermediate）；"
+                        "本地模式下也可写词频排名阈值")
+    p.add_argument("-s", "--source", choices=["relingo", "local"], default=None,
+                   help="词库来源（默认取配置，缺省 relingo）")
     p.add_argument("-a", "--all", action="store_true", help="同一个词每次出现都注释（默认只注释首次）")
     p.add_argument("-p", "--phonetic", action="store_true", help="显示音标")
     p.add_argument("--color", choices=["auto", "always", "never"], default="auto")
@@ -38,9 +54,29 @@ def _color(args) -> bool:
     return args.color == "always"
 
 
+def _local_lexicon():
+    return EcdictLexicon(db_path()) if os.path.exists(db_path()) else None
+
+
+def _lexicon(cfg: dict, source: str, level: str):
+    local = _local_lexicon()
+    if source == "relingo":
+        from .relingo import RelingoLexicon, get_token
+        if level not in C.RELINGO_LEVELS:
+            raise ValueError(f"Relingo 模式下难度只能是 {'|'.join(C.RELINGO_LEVELS)}")
+        return RelingoLexicon(cfg["relingo"], C.RELINGO_LEVELS[level], data_dir(), local, get_token())
+    if not local:
+        raise FileNotFoundError(f"找不到词库 {db_path()}，先运行 scripts/fetch-ecdict.sh 构建")
+    return local
+
+
 def _annotator(args) -> A.Annotator:
-    lex = EcdictLexicon(db_path())
-    return A.Annotator(lex, UserStore(), A.parse_level(args.level), once=not args.all)
+    cfg = C.load()
+    source = getattr(args, "source", None) or os.environ.get("RLC_SOURCE") or cfg["source"]
+    level = getattr(args, "level", None) or os.environ.get("RLC_LEVEL") or cfg["level"]
+    lex = _lexicon(cfg, source, level)
+    return A.Annotator(lex, UserStore(devwords=cfg["devwords"]), A.parse_level(level),
+                       once=not getattr(args, "all", False))
 
 
 def _print_list(hits: list[A.Hit], color: bool, phonetic: bool):
@@ -59,13 +95,53 @@ def _print_list(hits: list[A.Hit], color: bool, phonetic: bool):
             print(f"{star}{head}  {ph}{e.translation}")
 
 
-def _list_text(text: str, args):
-    ann = _annotator(args)
+def _collect(ann: A.Annotator, text: str) -> list[A.Hit]:
     ann.once = True
-    hits = []
-    for line in text.splitlines():
-        hits.extend(ann.hits(strip_ansi(line)))
-    _print_list(hits, _color(args), args.phonetic)
+    lines = [strip_ansi(l) for l in text.splitlines()]
+    ann.prefetch(lines)
+    return [h for l in lines for h in ann.hits(l)]
+
+
+def _list_text(text: str, args):
+    _print_list(_collect(_annotator(args), text), _color(args), args.phonetic)
+
+
+def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int = 200):
+    """把输入切成小批：攒到停顿 idle 秒、或最多 max_wait 秒 / max_lines 行就交出一批。
+    这样 Relingo 模式下一批只发一次请求，同时 tail -f 之类的流仍然接近实时。"""
+    if stream is not sys.stdin:
+        batch = []
+        for raw in iter(stream.readline, ""):
+            batch.append(raw)
+            if len(batch) >= max_lines:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+        return
+    fd, buf, batch, first = stream.fileno(), b"", [], None
+    while True:
+        timeout = None if not batch else max(0.0, min(idle, first + max_wait - time.time()))
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if ready:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            buf += chunk
+            *lines, buf = buf.split(b"\n")
+            for l in lines:
+                batch.append(l.decode("utf-8", "replace") + "\n")
+            if batch and first is None:
+                first = time.time()
+            if len(batch) < max_lines and (first is None or time.time() - first < max_wait):
+                continue
+        if batch:
+            yield batch
+            batch, first = [], None
+    if buf:
+        batch.append(buf.decode("utf-8", "replace"))
+    if batch:
+        yield batch
 
 
 def cmd_annotate(args):
@@ -75,19 +151,21 @@ def cmd_annotate(args):
     if args.list:
         text = "".join(sys.stdin.read() if f == "-" else open(f, encoding="utf-8", errors="replace").read()
                        for f in files)
-        return _list_text(text, args)
+        return _print_list(_collect(ann, text), color, args.phonetic)
     sys.stdout.reconfigure(line_buffering=True)
     for f in files:
         stream = sys.stdin if f == "-" else open(f, encoding="utf-8", errors="replace")
-        # 逐行读，tail -f / 长时间构建日志也能实时出结果
-        for raw in iter(stream.readline, ""):
-            body = raw.rstrip("\n")
-            hits = ann.hits(strip_ansi(body))
-            if args.json:
-                for h in hits:
-                    print(A.hit_json(h))
-                continue
-            sys.stdout.write(A.render_line(body, hits, color, args.phonetic) + ("\n" if raw.endswith("\n") else ""))
+        for batch in _batches(stream):
+            bodies = [raw.rstrip("\n") for raw in batch]
+            ann.prefetch([strip_ansi(b) for b in bodies])
+            for raw, body in zip(batch, bodies):
+                hits = ann.hits(strip_ansi(body))
+                if args.json:
+                    for h in hits:
+                        print(A.hit_json(h))
+                    continue
+                sys.stdout.write(A.render_line(body, hits, color, args.phonetic)
+                                 + ("\n" if raw.endswith("\n") else ""))
 
 
 def cmd_screen(args):
@@ -97,26 +175,156 @@ def cmd_screen(args):
 
 
 def cmd_clip(args):
-    text = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-    _list_text(text, args)
+    _list_text(subprocess.run(["pbpaste"], capture_output=True, text=True).stdout, args)
 
 
 def cmd_lookup(args):
-    lex = EcdictLexicon(db_path())
-    store = UserStore()
+    local = _local_lexicon()
+    ann = _annotator(args)
+    store = ann.store
     for w in args.words:
-        e = lex.lookup([w.lower()]).get(w.lower())
-        if not e:
+        n = w.lower()
+        e = local.lookup([n]).get(n) if local else None
+        remote = ann.lex.lookup([n]).get(n) if ann.lex is not local else None
+        if not e and not remote:
             print(f"{w}: 未收录")
             continue
-        state = "★生词本" if store.is_star(w.lower(), e.word) else "已掌握" if store.is_known(w.lower(), e.word) else ""
-        rank = e.rank or "未收录"
-        print(f"{e.word} /{e.phonetic}/  {e.translation}  [词频 {rank}] {e.tags} {state}".rstrip())
+        base = remote or e
+        state = "★生词本" if store.is_star(n, base.word) else "已掌握" if store.is_known(n, base.word) else ""
+        if ann.lex is not local:
+            src = (f"Relingo：{'★' if remote.starred else ''}生词 {remote.translation}" if remote and remote.hard
+                   else "Relingo：不是生词（低于级别或已掌握）")
+            print(f"{base.word} /{base.phonetic}/  {src} {state}".rstrip())
+        if e:
+            rank = e.rank or "未收录"
+            print(f"  本地：{e.translation}  [词频 {rank}] {e.tags}".rstrip())
+
+
+# ---------- Agent 集成（Claude Code mod / Codex hook 共用） ----------
+
+def history_path() -> str:
+    return os.path.join(data_dir(), "agent-words.jsonl")
+
+
+def agent_words(text: str, agent: str, args) -> list[dict]:
+    """去掉 fenced 代码块后取生词，并把结果追加到历史文件。"""
+    prose = FENCE_RE.sub("", text)
+    hits = _collect(_annotator(args), prose)
+    words = [json.loads(A.hit_json(h)) for h in hits]
+    if words:
+        os.makedirs(data_dir(), exist_ok=True)
+        with open(history_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), "agent": agent, "words": words}, ensure_ascii=False) + "\n")
+    return words
+
+
+def _one_line(words: list[dict], limit: int = 12) -> str:
+    parts = [f"{'★' if w['starred'] else ''}{w['lemma']} {w['translation']}" for w in words[:limit]]
+    more = f" …另有 {len(words) - limit} 个" if len(words) > limit else ""
+    return "生词：" + " · ".join(parts) + more
+
+
+def cmd_agent(args):
+    words = agent_words(sys.stdin.read(), args.name, args)
+    if args.format == "json":
+        print(json.dumps({"words": words}, ensure_ascii=False))
+    elif words:
+        print(_one_line(words, limit=10_000))
+
+
+def cmd_codex_hook(args):
+    """Codex Stop hook：stdin 是 hook JSON，stdout 必须是 JSON 或空。任何错误都静默，不打断 Codex。"""
+    try:
+        payload = json.load(sys.stdin)
+        text = payload.get("last_assistant_message") or ""
+        words = agent_words(text, "codex", args) if text.strip() else []
+        if words:
+            print(json.dumps({"systemMessage": _one_line(words)}, ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001
+        print(f"rlc codex-hook: {e}", file=sys.stderr)
+
+
+def cmd_history(args):
+    path = history_path()
+    color = _color(args)
+
+    def show(rec):
+        t = time.strftime("%H:%M", time.localtime(rec["ts"]))
+        head = f"── {t} {rec['agent']} ({len(rec['words'])})"
+        print(f"{A.DIM}{head}{A.RESET}" if color else head)
+        for w in rec["words"]:
+            star = "★" if w["starred"] else " "
+            print(f"{star}{A.CYAN}{w['lemma']}{A.RESET}  {w['translation']}" if color
+                  else f"{star}{w['lemma']}  {w['translation']}")
+
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
+    for l in lines[-args.n:]:
+        show(json.loads(l))
+    if not args.follow:
+        return
+    sys.stdout.reconfigure(line_buffering=True)
+    pos = os.path.getsize(path) if os.path.exists(path) else 0
+    while True:
+        time.sleep(0.5)
+        if not os.path.exists(path) or os.path.getsize(path) <= pos:
+            continue
+        with open(path, encoding="utf-8") as f:
+            f.seek(pos)
+            new = f.read()
+            pos = f.tell()
+        for l in new.splitlines():
+            if l.strip():
+                show(json.loads(l))
+
+
+# ---------- 账号 / 配置 / 缓存 ----------
+
+def cmd_auth(args):
+    from . import relingo as R
+    if args.action == "logout":
+        print("已从钥匙串删除 token" if R.delete_token() else "钥匙串里没有 token")
+        return
+    if args.action == "login":
+        token = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip()
+        if not token or len(token) < 16 or len(token) > 4096:
+            raise RuntimeError("剪贴板里没有像 token 的内容。先按 README 的步骤从扩展里复制 token，再运行 rlc auth login")
+        R.save_token(token)
+        subprocess.run(["pbcopy"], input="", text=True)  # 清掉剪贴板里的 token
+        print("token 已存入钥匙串（service=rlc-relingo），剪贴板已清空")
+    token = R.get_token()
+    if not token:
+        print("未登录：Relingo 模式下按匿名级别判词，不含你的已掌握 / 生词本")
+        return
+    cfg = C.load()
+    lex = R.RelingoLexicon(cfg["relingo"], C.RELINGO_LEVELS["intermediate"], data_dir(), None, token)
+    try:
+        info = lex.user_info()
+    except R.RelingoError as e:
+        raise RuntimeError(f"token 校验失败：{e}" + ("（token 无效或过期）" if e.auth else "")) from None
+    email = str(info.get("email") or "")
+    masked = re.sub(r"(^.).*(@.*$)", r"\1***\2", email) if email else "（无邮箱字段）"
+    print(f"已登录 Relingo：{masked}")
+
+
+def cmd_config(args):
+    if args.action == "init":
+        print(f"配置文件：{C.init()}")
+    elif args.action == "path":
+        print(C.config_path())
+    else:
+        print(json.dumps(C.load(), ensure_ascii=False, indent=2))
+
+
+def cmd_cache(args):
+    from .relingo import RelingoLexicon
+    cfg = C.load()
+    lex = RelingoLexicon(cfg["relingo"], "", data_dir(), None, None)
+    print(f"已清空 {lex.clear_cache()} 条缓存，退避状态已重置")
 
 
 def cmd_mark(args):
     UserStore().mark(args.words, args.cmd)
-    print(f"{args.cmd}: {' '.join(args.words)}")
+    print(f"{args.cmd}: {' '.join(args.words)}（本地词库）")
 
 
 def cmd_import(args):
@@ -158,10 +366,39 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("lookup", help="查词")
     p.add_argument("words", nargs="+")
+    _add_view_opts(p)
     p.set_defaults(fn=cmd_lookup)
 
+    p = sub.add_parser("agent", help="列出 Agent 回复（stdin）里的生词并记入历史")
+    p.add_argument("--name", default="agent", help="记录在历史里的 Agent 名")
+    p.add_argument("--format", choices=["json", "text"], default="text")
+    _add_view_opts(p)
+    p.set_defaults(fn=cmd_agent)
+
+    p = sub.add_parser("codex-hook", help="Codex Stop hook 入口（stdin 为 hook JSON）")
+    _add_view_opts(p)
+    p.set_defaults(fn=cmd_codex_hook)
+
+    p = sub.add_parser("history", help="Agent 回复生词历史")
+    p.add_argument("-f", "--follow", action="store_true", help="持续显示新记录")
+    p.add_argument("-n", type=int, default=5, help="先显示最近 n 条（默认 5）")
+    p.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    p.set_defaults(fn=cmd_history)
+
+    p = sub.add_parser("auth", help="Relingo 账号 token")
+    p.add_argument("action", choices=["login", "status", "logout"])
+    p.set_defaults(fn=cmd_auth)
+
+    p = sub.add_parser("config", help="配置文件")
+    p.add_argument("action", choices=["init", "show", "path"])
+    p.set_defaults(fn=cmd_config)
+
+    p = sub.add_parser("cache", help="Relingo 结果缓存")
+    p.add_argument("action", choices=["clear"])
+    p.set_defaults(fn=cmd_cache)
+
     for name, h in (("known", "标记为已掌握"), ("star", "加入生词本（总是高亮）"), ("forget", "从个人词库移除")):
-        p = sub.add_parser(name, help=h)
+        p = sub.add_parser(name, help=h + "（本地，叠加在 Relingo 结果之上）")
         p.add_argument("words", nargs="+")
         p.set_defaults(fn=cmd_mark)
 
