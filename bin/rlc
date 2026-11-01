@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# rlc 入口：不依赖安装，直接以 -I 隔离模式运行仓库内的 rlc 包。
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec python3 -I -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from rlc.cli import main; sys.exit(main())' "$ROOT" "$@"
