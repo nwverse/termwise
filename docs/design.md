@@ -193,22 +193,36 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 - **加载**：开发期放在本会话的 dev-mods 目录，通过符号链接指向仓库。需要用户在 Claude Code 弹出的「Turn on the mods…」里选择开启。
   - 长期使用的话，可以在仓库加 `.claude-plugin/marketplace.json`，再用 `claude plugin marketplace add <repo>` 和 `claude plugin install relingo-words` 安装。
 
-### 5.2 Codex：`integrations/codex`
+### 5.2 Codex（ChatGPT 桌面 app 插件）：`integrations/codex/relingo-words`
 
-调研结论：本机 Codex 是 ChatGPT.app 自带的 `codex-cli 0.163.0-alpha`，`hooks` 已是 stable 功能。
+用户要求做成 ChatGPT app 里 Codex 的**插件**，不用裸 hook，也不走命令行。按官方打包文档（developers.openai.com/plugins/build/plugins），并对照 ChatGPT.app 自带插件的实际文件来写。
 
-| 机制 | 适合度 |
-|---|---|
-| `Stop` hook（`~/.codex/hooks.json` 或 `[hooks]`） | **采用**。stdin JSON 里有 `last_assistant_message`；输出 `{"systemMessage": "..."}` 会作为提示显示在 TUI 里 |
-| `notify` | 不采用。只能配置一条命令，已经被 ChatGPT 的 Computer Use 助手占用；而且是事后单独起进程，没法在 TUI 里显示内容 |
-| MCP / skills / 自定义 prompt | 只有模型能调用，不能在每轮回复后自动触发 |
-| `tui.status_line` | 只能放内置条目，不能放自定义文本（未完全确认） |
+**插件内容**
+- `.codex-plugin/plugin.json`：名称、说明，以及 `interface`（app 插件目录里显示的名字、描述和示例提示），`skills: "./skills/"`。
+- `hooks/hooks.json`：放在插件根目录，属于默认发现路径，不需要在清单里声明。
+  - 注册一个 `Stop` hook，命令是 `/bin/bash "${PLUGIN_ROOT}/hooks/stop.sh"`。`stop.sh` 再调用 `~/.local/bin/rlc codex-hook`。
+  - hook 读 `last_assistant_message`，输出 `{"systemMessage": "生词：…"}`，同时写进共享历史，供 Ghostty 里 ⌘⌃L 打开的分屏显示。
+  - 插件里的 hooks 只有**手动安装的桌面 app 插件**才支持，而且这类插件进不了公开插件目录。这和我们的用途相符。
+- `skills/relingo/SKILL.md`：你在对话里说「查一下 X」「列出上一条回复的生词」「把 X 标为已掌握」时，Codex 会调用 `rlc lookup / history / known / star`。
 
-- **实现**：`rlc codex-hook` 读 hook JSON，对 `last_assistant_message` 运行 `rlc agent`，输出一行 `systemMessage`（最多 12 个词，多出的显示「…另有 N 个」）。同时写入共享历史，所以 Ghostty 里 ⌘⌃L 打开的分屏也能看到。
-  - 出任何错都静默退出（exit 0，不输出），保证不打断 Codex。
-- **安装**：`integrations/codex/install.sh` 会把 `hooks.json` 复制到 `~/.codex/hooks.json`；文件已存在时不覆盖。之后要在 Codex 里运行 `/hooks` 审核并信任这个 hook，因为非托管的 hook 必须先被信任才会运行。
-  - **还没安装**：修改 `~/.codex` 不在这次的授权范围内，安装操作被权限拦了，等用户确认。
-- **未验证**：多行或较长的 `systemMessage` 在 TUI 里怎么显示；`codex exec` 下 `Stop` 是否也会触发。
+**marketplace**：放在仓库里的 `.agents/plugins/marketplace.json`，格式和 ChatGPT.app 自带的 `openai-bundled` marketplace 一致（`source: {source: "local", path}`、`policy`、`category`）。
+
+**已验证**
+- 用临时 `CODEX_HOME` 跑 `codex plugin marketplace add` 和 `plugin add`，能识别 marketplace，插件能完整安装到 `plugins/cache/relingo-code/relingo-words/0.1.0/`。你的 `~/.codex` 没有动。
+- 在精简 PATH 下模拟 `PLUGIN_ROOT` 运行 hook 命令，输出正确的 `systemMessage`。
+
+**未验证**
+- 在 app 里的实际安装流程。
+- hook 信任提示出现在哪里。
+- `systemMessage` 在 app 界面里怎么显示（文档只说会作为警告显示在界面或事件流里）。
+- hook 在 app 的沙盒里能不能访问 Relingo（访问不了时会回退本地词库）。
+
+**为什么不选其他机制**
+- `notify`：已经被 ChatGPT 的 Computer Use 助手占用，而且显示不了内容。
+- 只做 MCP 或 skill：只有模型主动调用才会运行，做不到「每次回复后自动出现」。
+- `.app.json`：引用的是 ChatGPT 服务端的 connector，本地做不了。
+
+**注意**：app 安装的是插件的副本（缓存目录），修改插件后要重新安装或重启 app 才会生效。rlc 本身不在插件里，修改 rlc 立即生效。
 
 ## 6. 范围与里程碑
 
@@ -216,7 +230,7 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 |---|---|---|
 | M0 | 调研、设计文档、`rlc` CLI 原型（本地词库） | 完成 |
 | M1 | Relingo 服务端接入：钥匙串 token、缓存、限频、退避、本地兜底；配置文件；Ghostty 快捷键 | 完成（带 token 的路径待用户登录后验证） |
-| M2 | Claude Code mod（pane + 提示栏上方一行）、Codex Stop hook、共享历史分屏 | 完成（Codex hook 待安装） |
+| M2 | Claude Code mod（pane + 提示栏上方一行）、Codex app 插件（Stop hook + skill）、共享历史分屏 | 完成（Codex 插件待在 app 里安装） |
 | M3 | 回写 Relingo：在 pane 或终端里标的已掌握 / 生词本同步回 Relingo（`submitVocabulary`，需要先拿到 masterID / currentBookID） | 待决定 |
 | M4 | `rlc` 打包安装；mod 发布为本地 marketplace；按实际使用调整白名单和 `local_jargon` 规则 | 待做 |
 
@@ -224,5 +238,5 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 
 1. 执行 `rlc auth login` 登录，然后用 `rlc auth status` 验证。登录后我再确认带 token 的返回字段（`mastered` 等），以及是否需要 cookie。
 2. 是否把 pane 里的 ✓（已掌握）回写到 Relingo（M3）？目前只写本地词库。
-3. 是否安装 Codex hook（`integrations/codex/install.sh`），之后在 Codex 里用 `/hooks` 信任它。
+3. 在 ChatGPT app 里安装 Codex 插件，并信任它的 hook（步骤见 README）。
 4. 缓存有效期默认 12 小时是否合适（越短越及时，请求也越多）。

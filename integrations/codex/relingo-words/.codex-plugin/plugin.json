@@ -1,0 +1,23 @@
+{
+  "name": "relingo-words",
+  "version": "0.1.0",
+  "description": "After each Codex reply, lists the hard English words in it with Chinese meanings, judged by your Relingo level and wordbook (rlc).",
+  "author": { "name": "linshengtao" },
+  "license": "MIT",
+  "keywords": ["relingo", "vocabulary", "english", "生词"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Relingo 生词",
+    "shortDescription": "Show hard English words from each reply",
+    "longDescription": "After every reply, shows the English words that are new for you (by your Relingo level and mastered words) with Chinese meanings. Ask it to look up a word, show recent words, or mark a word as known.",
+    "developerName": "linshengtao",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "列出上一条回复里的生词",
+      "查一下 idempotent 是什么意思",
+      "把 ephemeral 标为已掌握"
+    ],
+    "brandColor": "#2F80ED"
+  }
+}

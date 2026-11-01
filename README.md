@@ -53,6 +53,10 @@ Ghostty 快捷键（已写入 `~/Library/Application Support/com.mitchellh.ghost
 ## Agent 集成
 
 - **Claude Code**：`integrations/claude-code/relingo-words` 是一个 mod，每次回复后在侧边 pane「生词」和提示栏上方一行列出生词。命令：`/relingo [open|close|band|clear]`。
-- **Codex**：`integrations/codex/install.sh` 会安装用户级 `Stop` hook，每次回复后显示一行 `生词：…`。装好后要在 Codex 里运行 `/hooks` 信任它。
+- **Codex（ChatGPT 桌面 app）**：`integrations/codex/relingo-words` 是一个 app 插件。每次回复后显示一行「生词：…」，也可以直接在对话里让它查词或标记已掌握。安装步骤：
+  1. 重启 ChatGPT app，在 Codex 里打开本仓库（relingo-code）这个项目；
+  2. 打开插件目录，选择「relingo-code (local)」这个 marketplace，安装「Relingo 生词」；
+  3. 按提示审核并信任插件的 hook，插件里的 hook 不信任就不会运行；
+  4. 新建一个对话开始使用。修改插件后要重新安装或重启 app 才会生效。
 
 数据（词库、缓存、个人词库、Agent 生词历史）默认放在仓库的 `data/`（已 gitignore），可以用 `RLC_DATA` 修改；配置文件位置可以用 `RLC_CONFIG` 修改。

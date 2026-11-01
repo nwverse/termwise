@@ -5,9 +5,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/linshengtao/.local/bin/rlc codex-hook",
+            "command": "/bin/bash \"${PLUGIN_ROOT}/hooks/stop.sh\"",
             "timeout": 30,
-            "statusMessage": "rlc：查回复里的生词"
+            "statusMessage": "Relingo：查回复里的生词"
           }
         ]
       }

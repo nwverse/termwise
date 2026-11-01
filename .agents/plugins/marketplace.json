@@ -1,0 +1,12 @@
+{
+  "name": "relingo-code",
+  "interface": { "displayName": "relingo-code (local)" },
+  "plugins": [
+    {
+      "name": "relingo-words",
+      "source": { "source": "local", "path": "./integrations/codex/relingo-words" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}
