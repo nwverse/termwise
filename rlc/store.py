@@ -63,7 +63,7 @@ class UserStore:
 
     def import_relingo_csv(self, path: str, default: str = "star") -> tuple[int, int]:
         """Relingo 导出的 CSV 列为 word,translation,phonetic,mastered,sentences，
-        mastered 列为 ✓ / ✗。✓ 记为已掌握，其余按 default（默认进生词本）。"""
+        mastered 列为 ✓ / ✗。✓ 记为已掌握，其余按 default：star 进生词本，known 记为已掌握，ignore 不导入。"""
         known, star = [], []
         with open(path, encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
@@ -72,8 +72,10 @@ class UserStore:
                     continue
                 if (row.get("mastered") or "").strip() in ("✓", "true", "1", "yes"):
                     known.append(w)
-                else:
-                    (star if default == "star" else known).append(w)
+                elif default == "star":
+                    star.append(w)
+                elif default == "known":
+                    known.append(w)
         self.known.update(known)
         self.star.difference_update(known)
         self.star.update(star)

@@ -167,7 +167,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("import-relingo", help="导入 Relingo 导出的 CSV（word,translation,phonetic,mastered,sentences）")
     p.add_argument("csv")
-    p.add_argument("--rest", choices=["star", "known"], default="star", help="未标 mastered 的词放哪（默认 star）")
+    p.add_argument("--rest", choices=["star", "known", "ignore"], default="star",
+                   help="未标 mastered 的词放哪：star 生词本（默认，适合导出的是生词本）/ known / ignore（级别词书用这个）")
     p.set_defaults(fn=cmd_import)
 
     p = sub.add_parser("build-db", help="由 ECDICT CSV 构建本地词库")

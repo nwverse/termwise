@@ -57,12 +57,13 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 ### 1.3 用户词库能不能拿到
 
 - **能，而且有不碰接口的合规办法**：Relingo 选项页的词书支持「导出 CSV」（对应 `exportCSVRows`），列为 `word,translation,phonetic,mastered,sentences`，mastered 列为 ✓/✗。另外还能导出 Anki 格式。
+- 导入时要选对词书：导出的是生词本，未掌握的词进 star，这是默认行为；导出的是级别词书或内置词书，要用 `--rest ignore`，否则满屏高亮。
 - 已掌握词和生词本在服务端是**两本不同的词书**（代码里的 `masterID` 和 `currentBookID`）。可能要分别导出，具体以选项页 UI 为准，这一点没有替你点开验证。
 - 通过接口拿（`getVocabulary` / `getUserVocabulary`）需要用户 token。
 
 ### 1.4 服务条款
 
-`https://relingo.net/en/terms` 是一份通用模板，**没有任何关于 API、逆向、自动化访问、第三方客户端的条款**，既没有允许也没有禁止。最相关的一条是 License 段落里的 "Reproduce, duplicate or copy material from Relingo"。由于没有明确授权：
+`https://relingo.net/en/terms` 是一份通用模板（已用 curl 拉原文 grep 过），**没有任何关于 API、逆向、自动化访问、第三方客户端的条款**，既没有允许也没有禁止。最相关的一条是 License 段落里的 "Reproduce, duplicate or copy material from Relingo"。由于没有明确授权：
 
 - 调用非公开接口属于灰色地带。用户自己的账号、自用、低频访问，风险主要是被封号或接口失效，法律风险较低，但无法排除。
 - 把 Relingo 的释义数据缓存、再分发属于 "copy material"，应避免。
@@ -133,13 +134,14 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 Ghostty 集成从轻到重分四档：
 
 1. **管道**：`cmd 2>&1 | rlc`。零配置，可以流式处理。
-2. **事后分析屏幕**：输入 `rlc --list `，按 Ghostty 默认的 `⌘⇧J`（`write_screen_file:paste,plain`）把屏幕文本文件路径粘进来，再回车。不需要授权，也不碰剪贴板。也可以自定义 keybind，一键完成：
+2. **事后分析屏幕**：输入 `rlc --list `，按 Ghostty 默认的 `⌘⇧J`（`write_screen_file:paste,plain`）把屏幕文本文件路径粘进来，再回车。不需要授权，也不碰剪贴板。可以加一个 keybind 省掉手动输入：
 
    ```ini
-   # 等价于手动输入 "rlc --list " 再按 ⌘⇧J、回车。依赖 shell 处在提示符状态，尚未实测
-   keybind = super+shift+l=text:rlc --list 
+   # 只负责输入 "rlc --list "（\x20 是结尾空格，Zig 字符串语法），之后仍要按 ⌘⇧J 和回车。
+   # 已通过 ghostty +validate-config 校验，还没在 Ghostty 里实际按过
+   keybind = super+shift+l=text:rlc --list\x20
    ```
-3. **quick terminal 当查词面板**：在选区上按 ⌘C，然后呼出 quick terminal 运行 `rlc clip`。
+3. **quick terminal 当查词面板**：在选区上按 ⌘C，然后呼出 quick terminal 运行 `rlc clip`。（以上 2–4 档都还没在 Ghostty 里实测，见第 2 节的实测记录）
 
    ```ini
    keybind = global:super+grave_accent=toggle_quick_terminal
