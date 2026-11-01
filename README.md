@@ -44,9 +44,11 @@ Ghostty 快捷键（已写入 `~/Library/Application Support/com.mitchellh.ghost
 
 | 快捷键 | 动作 |
 |---|---|
-| ⌘⇧L | 列出当前屏幕上的生词（在 shell 提示符下按） |
-| ⌘⌥⇧L | 列出整个 scrollback 里的生词 |
+| ⌘⇧L | 在 shell 提示符下填好 `rlc --list <屏幕文本文件>`，按回车执行 |
+| ⌘⌥⇧L | 同上，范围是整个 scrollback |
 | ⌘⌃L | 在右侧开分屏，运行 `rlc history -f` |
+
+改完配置要按 ⌘⇧, 重新加载。这三个快捷键都还没实际按过，见 design.md §4.2。原配置备份在同一目录的 `config.ghostty.bak-20261101`。
 
 ## Agent 集成
 

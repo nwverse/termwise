@@ -146,6 +146,8 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
   - 不落文件、不打印；`rlc auth status` 只显示打码后的邮箱。
   - 获取方式见 README：在扩展选项页的 DevTools 里执行一行代码把 token 复制到剪贴板，再运行 `rlc auth login`。rlc 读完剪贴板后会立即清空它。
   - token 失效（`illegal user token` 或 code 2001/2002）时提示一次，然后改用未登录模式。
+  - **钥匙串读写还没验证**：在开发用的沙盒会话里，`security` 报 "User interaction is not allowed"，写不进去；在用户自己的终端里应该能正常写入。用 `security` 写入的条目，再用 `security` 读取时不会弹授权框，hook 进程里读 token 不会卡住。
+- **解释器**：从 GUI 启动的程序（ChatGPT.app 里的 Codex、桌面端 Claude Code）PATH 很精简，`python3` 会指向系统自带的 3.9。`bin/rlc` 会自己找 3.11+ 的解释器（`RLC_PYTHON` 优先，然后是 Homebrew）。已用 `env -i PATH=/usr/bin:/bin` 模拟这种环境验证过。Claude Code mod 调用 rlc 时也会把 `~/.local/bin` 和 Homebrew 补进 PATH。
 - **缓存**：`data/relingo-cache.db`，按「级别 + 是否登录」分开存。
   - 「不是生词」的结果也缓存，默认有效 12 小时（`cache_ttl_hours`）。在浏览器里新标的已掌握词，最多 12 小时同步到终端；`rlc cache clear` 可以立即生效。
 - **限频**：同一批行只发一次请求。管道模式按停顿约 150ms，或最多 1 秒、200 行，攒成一批。两次请求至少间隔 2 秒，这个限制跨进程生效。
@@ -161,9 +163,11 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 
 | 快捷键 | 动作 |
 |---|---|
-| ⌘⇧L | `text:rlc --list ` → `write_screen_file:paste,plain` → 回车：列出当前屏幕上的生词（要在 shell 提示符下按） |
+| ⌘⇧L | 依次执行 `text:rlc --list ` 和 `write_screen_file:paste,plain`，在 shell 提示符处填好命令，**由你按回车执行**。故意不自动回车：焦点在 Claude Code / Codex 输入框里时误按，不会把它当消息发给 Agent |
 | ⌘⌥⇧L | 同上，范围是整个 scrollback |
-| ⌘⌃L | 在右侧开分屏，运行 `rlc history -f`，持续显示 Claude Code / Codex 回复里的生词 |
+| ⌘⌃L | 执行 `new_split:right` 后再执行 `text:rlc history -f\r`，持续显示 Claude Code / Codex 回复里的生词 |
+
+**这三个快捷键都还没在 Ghostty 里实际按过**，只通过了 `+validate-config`。特别是 ⌘⌃L：`new_split` 之后焦点会不会转到新分屏，决定了 `text:` 输入到哪个分屏，这一点还没确认。配置改完后要按 ⌘⇧,（reload_config）或重启 Ghostty 才会生效。
 
 `rlc` 通过 `~/.local/bin/rlc` 符号链接放进了 PATH。管道用法 `cmd 2>&1 | rlc` 不变。`rlc screen`（AppleScript）仍是可选功能，没有绑定快捷键。
 

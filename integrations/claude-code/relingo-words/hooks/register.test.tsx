@@ -7,6 +7,8 @@ const WORDS = {
   ],
 }
 
+const RAN = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+
 const PANE = {
   plugin: 'relingo-words',
   component: 'Pane',
@@ -36,10 +38,13 @@ const BAND = {
 
 test('a reply runs rlc and its words show in the pane and the band', async ($, on) => {
   const clock = mock.clock(on)
+  mock.env(on, { HOME: '/Users/me', PATH: '/usr/bin:/bin' })
   const calls: string[][] = []
+  const paths: (string | undefined)[] = []
   on('process.run', (_, e) => {
     calls.push([...e.argv])
-    return { value: { exitCode: 0, stdout: JSON.stringify(WORDS), stderr: '' } }
+    paths.push(e.init?.env?.PATH)
+    return { value: { ...RAN, stdout: JSON.stringify(WORDS) } }
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
 
@@ -54,6 +59,7 @@ test('a reply runs rlc and its words show in the pane and the band', async ($, o
   await clock.advance(10)
 
   expect(calls[0]).toEqual(['/usr/bin/env', 'rlc', 'agent', '--name', 'claude-code', '--format', 'json'])
+  expect(paths[0]).toBe('/Users/me/.local/bin:/opt/homebrew/bin:/usr/bin:/bin')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ ...PANE, surface })
@@ -69,10 +75,11 @@ test('a reply runs rlc and its words show in the pane and the band', async ($, o
 
 test('subagent turns and empty answers are ignored', async ($, on) => {
   const clock = mock.clock(on)
+  mock.env(on, { HOME: '/Users/me', PATH: '/usr/bin' })
   let ran = 0
   on('process.run', () => {
     ran += 1
-    return { value: { exitCode: 0, stdout: '{"words":[]}', stderr: '' } }
+    return { value: { ...RAN, stdout: '{"words":[]}' } }
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
 

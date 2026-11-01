@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Turn, Word } from '../types'
 
@@ -38,11 +38,21 @@ function fit(parts: string[], columns: number): string {
   return line
 }
 
+// /usr/bin/env resolves rlc on PATH (no shell involved). A session the
+// desktop app starts has a short PATH, so ~/.local/bin and Homebrew are added.
+async function runRlc($: EngineInterface, rlc: string, args: string[], stdin?: string) {
+  const home = (await $.env.get('HOME')) ?? ''
+  const path = (await $.env.get('PATH')) ?? '/usr/bin:/bin'
+  return $.process.run(['/usr/bin/env', rlc, ...args], {
+    stdin,
+    timeoutMs: 30_000,
+    env: { PATH: `${home}/.local/bin:/opt/homebrew/bin:${path}` },
+  })
+}
+
 export const register: Register = (on, options) => {
   const rlc = String(options.rlcPath || 'rlc')
   const autoOpen = options.autoOpenPane !== false
-  // /usr/bin/env resolves rlc on the session's PATH (no shell involved).
-  const argv = (...args: string[]) => ['/usr/bin/env', rlc, ...args]
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -82,10 +92,7 @@ export const register: Register = (on, options) => {
     void (async () => {
       let turn: Turn
       try {
-        const out = await $.process.run(
-          argv('agent', '--name', 'claude-code', '--format', 'json'),
-          { stdin: e.answer, timeoutMs: 30_000 },
-        )
+        const out = await runRlc($, rlc, ['agent', '--name', 'claude-code', '--format', 'json'], e.answer)
         if (out.exitCode !== 0) throw new Error(out.stderr.trim() || `rlc exit ${out.exitCode}`)
         const words: Word[] = JSON.parse(out.stdout).words ?? []
         turn = { id, at: await $.clock.now(), words }
@@ -150,7 +157,7 @@ export const register: Register = (on, options) => {
                     key={`known-${turn.id}-${w.lemma}`}
                     label="✓"
                     onPress={async () => {
-                      await $.process.run(argv('known', w.lemma))
+                      await runRlc($, rlc, ['known', w.lemma])
                       await update($, known, ks => [...ks, w.lemma])
                     }}
                   />
