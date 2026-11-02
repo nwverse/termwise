@@ -8,7 +8,7 @@
   tw agent [--name N]       给 Agent 回复用：去掉代码块后列生词，并记入历史
   tw history [-f]           查看 / 跟随 Agent 回复的生词历史（适合放在分屏里）
   tw codex-hook             Codex Stop hook 入口
-  tw auth login|status|logout   Relingo 账号 token（存 macOS 钥匙串）
+  tw auth login [--apple|--email A]  浏览器授权登录 Relingo（token 存 macOS 钥匙串）
   tw config init|show|path  配置文件 ~/.config/termwise/config.toml
   tw cache clear            清空 Relingo 结果缓存
   tw known|star|forget W..  本地个人词库（叠加在 Relingo 结果之上）
@@ -282,28 +282,39 @@ def cmd_history(args):
 def cmd_auth(args):
     from . import relingo as R
     if args.action == "logout":
-        print("已从钥匙串删除 token" if R.delete_token() else "钥匙串里没有 token")
-        return
-    if args.action == "login":
-        token = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip()
-        if not token or len(token) < 16 or len(token) > 4096:
-            raise RuntimeError("剪贴板里没有像 token 的内容。先按 README 的步骤从扩展里复制 token，再运行 tw auth login")
-        R.save_token(token)
-        subprocess.run(["pbcopy"], input="", text=True)  # 清掉剪贴板里的 token
-        print("token 已存入钥匙串（service=termwise-relingo），剪贴板已清空")
-    token = R.get_token()
-    if not token:
-        print("未登录：Relingo 模式下按匿名级别判词，不含你的已掌握 / 生词本")
+        print("已删除 Relingo token" if R.delete_token() else "没有保存过 token")
         return
     cfg = C.load()
-    lex = R.RelingoLexicon(cfg["relingo"], C.RELINGO_LEVELS["intermediate"], data_dir(), None, token)
+    lex = R.RelingoLexicon(cfg["relingo"], C.RELINGO_LEVELS["intermediate"], data_dir(), None, None)
+    if args.action == "login":
+        if args.paste:
+            token = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip()
+            subprocess.run(["pbcopy"], input="", text=True)  # 清掉剪贴板里的 token
+            if not 16 <= len(token) <= 4096:
+                raise RuntimeError("剪贴板里没有像 token 的内容")
+        else:
+            if args.email:
+                account = R.passcode_login(cfg["relingo"], args.email, lex.db)
+            else:
+                account = R.oauth_login(cfg["relingo"], "apple" if args.apple else "google", lex.db,
+                                        open_browser=not args.no_browser)
+            token = account.get("token") or ""
+            if not token:
+                raise RuntimeError("登录成功但返回里没有 token 字段")
+        where = R.save_token(token, insecure_storage=args.insecure_storage)
+        print(f"已登录，token 存在{where}")
+    token = R.get_token()
+    if not token:
+        print("未登录：按 Relingo 级别匿名判词，不含你的已掌握 / 生词本。运行 tw auth login 登录")
+        return
+    lex.client.token = token
     try:
         info = lex.user_info()
     except R.RelingoError as e:
-        raise RuntimeError(f"token 校验失败：{e}" + ("（token 无效或过期）" if e.auth else "")) from None
+        raise RuntimeError(f"token 校验失败：{e}" + ("（token 无效或过期，重新运行 tw auth login）" if e.auth else "")) from None
     email = str(info.get("email") or "")
     masked = re.sub(r"(^.).*(@.*$)", r"\1***\2", email) if email else "（无邮箱字段）"
-    print(f"已登录 Relingo：{masked}")
+    print(f"Relingo 账号：{masked}（token 存在{R.token_storage()}）")
 
 
 def cmd_config(args):
@@ -385,8 +396,15 @@ def main(argv=None) -> int:
     p.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p.set_defaults(fn=cmd_history)
 
-    p = sub.add_parser("auth", help="Relingo 账号 token")
+    p = sub.add_parser("auth", help="登录 Relingo（默认浏览器里用 Google 授权）")
     p.add_argument("action", choices=["login", "status", "logout"])
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--apple", action="store_true", help="用 Apple 账号授权")
+    g.add_argument("--email", metavar="ADDR", help="用邮箱验证码登录")
+    g.add_argument("--paste", action="store_true", help="从剪贴板读取从扩展复制出的 token")
+    p.add_argument("--no-browser", action="store_true", help="只打印授权链接，不自动打开浏览器")
+    p.add_argument("--insecure-storage", action="store_true",
+                   help="钥匙串不可用时把 token 存到 ~/.config/termwise/credentials（权限 600）")
     p.set_defaults(fn=cmd_auth)
 
     p = sub.add_parser("config", help="配置文件")

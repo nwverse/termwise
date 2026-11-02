@@ -14,16 +14,17 @@ tw config init                          # 生成 ~/.config/termwise/config.toml�
 
 ## 登录 Relingo（一次即可）
 
-不登录也能用：按级别判断生词，但不会计入你在 Relingo 里的已掌握词。登录步骤：
+```sh
+tw auth login            # 打开浏览器用 Google 账号授权，终端自动拿到 token
+tw auth login --apple    # 用 Apple 账号
+tw auth login --email you@example.com   # 用邮箱验证码
+tw auth status           # 查看登录状态（只显示打码后的邮箱）
+tw auth logout
+```
 
-1. 在 Chrome 打开 `chrome-extension://dpphkcfmnbkdpmgneljgdhfnccnhmfig/options.html`，按 ⌥⌘I 打开 DevTools，切到 Console。
-2. 粘贴并回车（token 会被复制到剪贴板，不会显示出来）：
-   ```js
-   chrome.storage.local.get('persist:relingo-v2').then(r => copy(JSON.parse(JSON.parse(r['persist:relingo-v2']).account).account.token))
-   ```
-3. 在终端执行 `tw auth login`：tw 从剪贴板读取 token，存进 macOS 钥匙串（service `termwise-relingo`），清空剪贴板，再调用一次接口验证。
+登录走的是和 Relingo 扩展相同的流程：浏览器里完成授权，终端轮询取回账号。token 存在 macOS 钥匙串（service `termwise-relingo`），不会打印出来。如果当前环境访问不了钥匙串，可以加 `--insecure-storage`，改存到 `~/.config/termwise/credentials`，文件权限 600。
 
-`tw auth status` 查看登录状态，`tw auth logout` 从钥匙串删除 token。token 不会写入任何文件，也不会打印出来。
+不登录也能用：会按 Relingo 级别判断生词，但不会计入你的已掌握词。
 
 ## 用法
 

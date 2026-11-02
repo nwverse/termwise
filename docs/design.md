@@ -144,7 +144,11 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 - **token**：存在 macOS 钥匙串（service `termwise-relingo`）。
   - 写入时经 `security -i` 的 stdin 传进去，不出现在进程参数里。
   - 不落文件、不打印；`tw auth status` 只显示打码后的邮箱。
-  - 获取方式见 README：在扩展选项页的 DevTools 里执行一行代码把 token 复制到剪贴板，再运行 `tw auth login`。tw 读完剪贴板后会立即清空它。
+  - 登录方式：`tw auth login` 走和扩展相同的 OAuth 设备流。
+    - 先调 `oauthGoogleUrl`（或 `oauthAppleUrl`）拿到 `{url, id}`，在浏览器里打开 `url` 完成授权；再每 2 秒用 `id` 调一次 `oauthGoogleProfile`，返回里出现 `email` 就说明拿到了带 token 的账号，最多轮询 120 次。
+    - 备选是邮箱验证码登录：`sendPasscode({email, type: "LOGIN"})`，再 `login({type: "PASSCODE", email, code})`。
+    - 2026-11-01 实测：`oauthGoogleUrl` 返回 `{id, url}`，`url` 指向 `accounts.google.com/o/oauth2/v2/auth`；授权完成前，`oauthGoogleProfile` 返回空对象。授权完成后的返回还没实测，因为要你本人完成 Google 授权。
+    - 钥匙串不可用时（比如这个开发会话，`security` 返回 36 "interaction not allowed"），可以显式加 `--insecure-storage`，改存到 `~/.config/termwise/credentials`，权限 600。
   - token 失效（`illegal user token` 或 code 2001/2002）时提示一次，然后改用未登录模式。
   - **钥匙串读写还没验证**：在开发用的沙盒会话里，`security` 报 "User interaction is not allowed"，写不进去；在用户自己的终端里应该能正常写入。用 `security` 写入的条目，再用 `security` 读取时不会弹授权框，hook 进程里读 token 不会卡住。
 - **解释器**：从 GUI 启动的程序（ChatGPT.app 里的 Codex、桌面端 Claude Code）PATH 很精简，`python3` 会指向系统自带的 3.9。`bin/tw` 会自己找 3.11+ 的解释器（`TW_PYTHON` 优先，然后是 Homebrew）。已用 `env -i PATH=/usr/bin:/bin` 模拟这种环境验证过。Claude Code mod 调用 tw 时也会把 `~/.local/bin` 和 Homebrew 补进 PATH。
