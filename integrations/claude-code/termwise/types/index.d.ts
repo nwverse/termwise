@@ -1,4 +1,4 @@
-// What `rlc agent --format json` prints per word.
+// What `tw agent --format json` prints per word.
 export type Word = {
   word: string
   lemma: string
@@ -12,7 +12,7 @@ export type Turn = { id: string; at: number; words: Word[]; error?: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'relingo-words': {
+    'termwise': {
       turns: Shaped<Turn[]>
       // Words marked known from the pane this session (hidden from then on).
       known: string[]

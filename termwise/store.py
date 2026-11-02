@@ -1,8 +1,8 @@
 """用户词库：已掌握 / 生词本，纯文本存储（每行一个小写词）。
 
 数据可以来自：
-- rlc known / rlc star 手动维护；
-- rlc import-relingo 导入 Relingo 选项页「导出 CSV」得到的文件（不调用 Relingo 接口）。
+- tw known / tw star 手动维护；
+- tw import-relingo 导入 Relingo 选项页「导出 CSV」得到的文件（不调用 Relingo 接口）。
 """
 
 import csv
@@ -13,7 +13,7 @@ DEV_WORDS = os.path.join(PKG_DIR, "devwords.txt")
 
 
 def data_dir() -> str:
-    return os.environ.get("RLC_DATA") or os.path.join(os.path.dirname(PKG_DIR), "data")
+    return os.environ.get("TW_DATA") or os.path.join(os.path.dirname(PKG_DIR), "data")
 
 
 def db_path() -> str:

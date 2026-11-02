@@ -1,6 +1,6 @@
 import unittest
 
-from rlc.textproc import extract_words, strip_ansi
+from termwise.textproc import extract_words, strip_ansi
 
 
 def norms(s):

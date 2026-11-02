@@ -4,7 +4,7 @@
 - 只发送去重后的小写词表，从不发送行文本、文件路径或 referrer；
 - 默认只发送本地词典里存在的词（only_dictionary_words）。
 
-token 存在 macOS 钥匙串（service=rlc-relingo），不写文件、不打印。
+token 存在 macOS 钥匙串（service=termwise-relingo），不写文件、不打印。
 """
 
 import json
@@ -19,7 +19,7 @@ from typing import Iterable, Optional
 
 from .lexicon import EcdictLexicon, Entry
 
-KEYCHAIN_SERVICE = "rlc-relingo"
+KEYCHAIN_SERVICE = "termwise-relingo"
 KEYCHAIN_ACCOUNT = "token"
 EXTENSION_ID = "dpphkcfmnbkdpmgneljgdhfnccnhmfig"
 AUTH_ERRORS = {"invalid signature", "illegal user token", "missing user token"}
@@ -48,7 +48,7 @@ def save_token(token: str):
     # 走 `security -i` 的 stdin，token 不出现在进程参数里（ps 看不到）
     if any(c in token for c in "\"\\\n\r "):
         raise ValueError("token 含有意外字符，请确认复制的是 token 本身")
-    cmd = f'add-generic-password -U -s {KEYCHAIN_SERVICE} -a {KEYCHAIN_ACCOUNT} -l "rlc Relingo token" -w "{token}"\n'
+    cmd = f'add-generic-password -U -s {KEYCHAIN_SERVICE} -a {KEYCHAIN_ACCOUNT} -l "tw Relingo token" -w "{token}"\n'
     r = subprocess.run(["security", "-i"], input=cmd, capture_output=True, text=True)
     if r.returncode != 0 or "error" in r.stderr.lower():
         raise RuntimeError("写入钥匙串失败：" + r.stderr.strip().replace(token, "***"))
@@ -108,7 +108,7 @@ class Client:
             "x-relingo-lang": self.cfg["native"],
             "x-relingo-dest-lang": "en",
             # Cloudflare 会拦 Python 默认 UA（error 1010），这里如实标明客户端身份
-            "User-Agent": "rlc/0.2 (relingo-code terminal client)",
+            "User-Agent": "termwise/0.2 (terminal client)",
         }
         if self.token:
             headers["x-relingo-token"] = self.token
@@ -184,7 +184,7 @@ class RelingoLexicon:
     def _warn(self, key: str, msg: str):
         if key not in self.warned:
             self.warned.add(key)
-            print(f"rlc: {msg}", file=sys.stderr)
+            print(f"tw: {msg}", file=sys.stderr)
 
     def _entry(self, word: str, item: Optional[dict]) -> Optional[Entry]:
         if item is None:
@@ -263,7 +263,7 @@ class RelingoLexicon:
                                                           "level": self.level})
             except RelingoError as e:
                 if e.auth and self.client.token:
-                    self._warn("auth", "Relingo token 无效或已过期，改为未登录模式（运行 rlc auth login 重新登录）")
+                    self._warn("auth", "Relingo token 无效或已过期，改为未登录模式（运行 tw auth login 重新登录）")
                     self.client.token, self.authenticated = None, False
                     return self._fetch(words[i:])
                 self._use_fallback(words[i:], f"Relingo 请求失败（{e}），本次使用本地词库")

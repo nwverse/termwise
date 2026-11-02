@@ -3,21 +3,21 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Turn, Word } from '../types'
 
-// Each Claude reply goes through `rlc agent` (fenced code stripped, words
+// Each Claude reply goes through `tw agent` (fenced code stripped, words
 // judged by Relingo with the local dictionary as fallback); the result is kept
 // per turn and drawn in a pane and a one-line band above the prompt.
 
-const PANE = 'relingo-words'
+const PANE = 'termwise'
 const TITLE = '生词'
 const KEEP_TURNS = 20
 
 // Bump the tag when Turn's fields change: older stored values then read as [].
-const turns = atom({ plugin: 'relingo-words', key: 'turns' } as const, [], {
+const turns = atom({ plugin: 'termwise', key: 'turns' } as const, [], {
   shape: 'turns-1',
 })
-const known = atom({ plugin: 'relingo-words', key: 'known' } as const, [])
+const known = atom({ plugin: 'termwise', key: 'known' } as const, [])
 const isBandHidden = atom(
-  { plugin: 'relingo-words', key: 'isBandHidden' } as const,
+  { plugin: 'termwise', key: 'isBandHidden' } as const,
   false,
 )
 
@@ -38,12 +38,12 @@ function fit(parts: string[], columns: number): string {
   return line
 }
 
-// /usr/bin/env resolves rlc on PATH (no shell involved). A session the
+// /usr/bin/env resolves tw on PATH (no shell involved). A session the
 // desktop app starts has a short PATH, so ~/.local/bin and Homebrew are added.
-async function runRlc($: EngineInterface, rlc: string, args: string[], stdin?: string) {
+async function runRlc($: EngineInterface, tw: string, args: string[], stdin?: string) {
   const home = (await $.env.get('HOME')) ?? ''
   const path = (await $.env.get('PATH')) ?? '/usr/bin:/bin'
-  return $.process.run(['/usr/bin/env', rlc, ...args], {
+  return $.process.run(['/usr/bin/env', tw, ...args], {
     stdin,
     timeoutMs: 30_000,
     env: { PATH: `${home}/.local/bin:/opt/homebrew/bin:${path}` },
@@ -51,20 +51,20 @@ async function runRlc($: EngineInterface, rlc: string, args: string[], stdin?: s
 }
 
 export const register: Register = (on, options) => {
-  const rlc = String(options.rlcPath || 'rlc')
+  const tw = String(options.rlcPath || 'tw')
   const autoOpen = options.autoOpenPane !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'relingo',
-      description: '生词 pane：/relingo [open|close|band|clear]',
+      name: 'termwise',
+      description: '生词 pane：/termwise [open|close|band|clear]',
     })
     if (autoOpen) void $.ui.open({ id: PANE, title: TITLE })
 
     return next(e)
   })
 
-  on('command.run', { command: 'relingo' }, async ($, e) => {
+  on('command.run', { command: 'termwise' }, async ($, e) => {
     const arg = e.args.trim()
     if (arg === 'close') {
       await $.ui.close({ id: PANE })
@@ -92,8 +92,8 @@ export const register: Register = (on, options) => {
     void (async () => {
       let turn: Turn
       try {
-        const out = await runRlc($, rlc, ['agent', '--name', 'claude-code', '--format', 'json'], e.answer)
-        if (out.exitCode !== 0) throw new Error(out.stderr.trim() || `rlc exit ${out.exitCode}`)
+        const out = await runRlc($, tw, ['agent', '--name', 'claude-code', '--format', 'json'], e.answer)
+        if (out.exitCode !== 0) throw new Error(out.stderr.trim() || `tw exit ${out.exitCode}`)
         const words: Word[] = JSON.parse(out.stdout).words ?? []
         turn = { id, at: await $.clock.now(), words }
       } catch (err) {
@@ -136,7 +136,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Text dimColor>Claude 每次回复后，这里列出回复里的生词。</Text>
-          <Text dimColor>/relingo band 切换提示栏上方的一行摘要。</Text>
+          <Text dimColor>/termwise band 切换提示栏上方的一行摘要。</Text>
         </Box>
       )
     }
@@ -150,14 +150,14 @@ export const register: Register = (on, options) => {
               <Text dimColor>
                 {i === 0 ? '最新回复' : `之前第 ${i} 条`} · {words.length} 个生词
               </Text>
-              {turn.error && <Text color="red" wrap="truncate-end">rlc：{turn.error}</Text>}
+              {turn.error && <Text color="red" wrap="truncate-end">tw：{turn.error}</Text>}
               {words.map(w => (
                 <Box key={`${turn.id}-${w.lemma}`}>
                   <Button
                     key={`known-${turn.id}-${w.lemma}`}
                     label="✓"
                     onPress={async () => {
-                      await runRlc($, rlc, ['known', w.lemma])
+                      await runRlc($, tw, ['known', w.lemma])
                       await update($, known, ks => [...ks, w.lemma])
                     }}
                   />
@@ -169,7 +169,7 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
-        <Text dimColor>✓ = 标为已掌握（rlc 本地词库）</Text>
+        <Text dimColor>✓ = 标为已掌握（tw 本地词库）</Text>
       </Box>
     )
   })

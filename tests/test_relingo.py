@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from rlc.relingo import RelingoError, RelingoLexicon, _translation, is_highlightable
+from termwise.relingo import RelingoError, RelingoLexicon, _translation, is_highlightable
 
 CFG = {"endpoint": "https://example.invalid", "native": "zh", "client_version": "3.31.1",
        "cache_ttl_hours": 12, "min_interval_seconds": 0, "timeout_seconds": 1,

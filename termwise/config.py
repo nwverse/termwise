@@ -1,4 +1,4 @@
-"""配置：~/.config/rlc/config.toml（可用 RLC_CONFIG 指定），缺省值见 DEFAULTS。"""
+"""配置：~/.config/termwise/config.toml（可用 TW_CONFIG 指定），缺省值见 DEFAULTS。"""
 
 import copy
 import os
@@ -9,14 +9,14 @@ DEFAULTS = {
     "source": "relingo",
     # 难度：basic | intermediate | advanced | expert
     "level": "intermediate",
-    # 是否把内置开发者常用词（rlc/devwords.txt）视为已认识
+    # 是否把内置开发者常用词（termwise/devwords.txt）视为已认识
     "devwords": True,
     "relingo": {
         "endpoint": "https://api.relingo.net",
         "native": "zh",
         # 扩展版本号会随请求头发送；留空则读取本机已安装扩展的 manifest
         "client_version": "",
-        # 缓存有效期：已掌握状态在浏览器里改了之后，最多这么久同步到终端（rlc cache clear 立即生效）
+        # 缓存有效期：已掌握状态在浏览器里改了之后，最多这么久同步到终端（tw cache clear 立即生效）
         "cache_ttl_hours": 12,
         # 两次请求之间的最短间隔（跨进程生效）
         "min_interval_seconds": 2.0,
@@ -30,7 +30,7 @@ DEFAULTS = {
 }
 
 TEMPLATE = """\
-# rlc 配置。改动即时生效（每次运行 rlc 时读取）。
+# tw 配置。改动即时生效（每次运行 tw 时读取）。
 source = "relingo"        # relingo | local
 level = "intermediate"    # basic | intermediate | advanced | expert
 devwords = true           # 内置开发者常用词视为已认识
@@ -51,7 +51,7 @@ RELINGO_LEVELS = {
 
 
 def config_path() -> str:
-    return os.environ.get("RLC_CONFIG") or os.path.expanduser("~/.config/rlc/config.toml")
+    return os.environ.get("TW_CONFIG") or os.path.expanduser("~/.config/termwise/config.toml")
 
 
 def _merge(base: dict, over: dict) -> dict:

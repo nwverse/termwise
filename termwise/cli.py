@@ -1,19 +1,19 @@
-"""rlc —— Relingo code mode：在终端 / Agent 回复里标出生词并给释义。
+"""tw —— Relingo code mode：在终端 / Agent 回复里标出生词并给释义。
 
-  cmd | rlc                  逐行透传，有生词的行下方加一行释义
-  rlc --list < file          只输出去重后的生词表
-  rlc screen [--scrollback]  读当前 Ghostty 终端的屏幕 / scrollback 并列出生词
-  rlc clip                   对剪贴板内容列出生词
-  rlc lookup WORD...         查词
-  rlc agent [--name N]       给 Agent 回复用：去掉代码块后列生词，并记入历史
-  rlc history [-f]           查看 / 跟随 Agent 回复的生词历史（适合放在分屏里）
-  rlc codex-hook             Codex Stop hook 入口
-  rlc auth login|status|logout   Relingo 账号 token（存 macOS 钥匙串）
-  rlc config init|show|path  配置文件 ~/.config/rlc/config.toml
-  rlc cache clear            清空 Relingo 结果缓存
-  rlc known|star|forget W..  本地个人词库（叠加在 Relingo 结果之上）
-  rlc import-relingo F.csv   导入 Relingo 导出的 CSV
-  rlc build-db ecdict.csv    构建本地词库
+  cmd | tw                  逐行透传，有生词的行下方加一行释义
+  tw --list < file          只输出去重后的生词表
+  tw screen [--scrollback]  读当前 Ghostty 终端的屏幕 / scrollback 并列出生词
+  tw clip                   对剪贴板内容列出生词
+  tw lookup WORD...         查词
+  tw agent [--name N]       给 Agent 回复用：去掉代码块后列生词，并记入历史
+  tw history [-f]           查看 / 跟随 Agent 回复的生词历史（适合放在分屏里）
+  tw codex-hook             Codex Stop hook 入口
+  tw auth login|status|logout   Relingo 账号 token（存 macOS 钥匙串）
+  tw config init|show|path  配置文件 ~/.config/termwise/config.toml
+  tw cache clear            清空 Relingo 结果缓存
+  tw known|star|forget W..  本地个人词库（叠加在 Relingo 结果之上）
+  tw import-relingo F.csv   导入 Relingo 导出的 CSV
+  tw build-db ecdict.csv    构建本地词库
 """
 
 import argparse
@@ -72,8 +72,8 @@ def _lexicon(cfg: dict, source: str, level: str):
 
 def _annotator(args) -> A.Annotator:
     cfg = C.load()
-    source = getattr(args, "source", None) or os.environ.get("RLC_SOURCE") or cfg["source"]
-    level = getattr(args, "level", None) or os.environ.get("RLC_LEVEL") or cfg["level"]
+    source = getattr(args, "source", None) or os.environ.get("TW_SOURCE") or cfg["source"]
+    level = getattr(args, "level", None) or os.environ.get("TW_LEVEL") or cfg["level"]
     lex = _lexicon(cfg, source, level)
     return A.Annotator(lex, UserStore(devwords=cfg["devwords"]), A.parse_level(level),
                        once=not getattr(args, "all", False))
@@ -241,7 +241,7 @@ def cmd_codex_hook(args):
         if words:
             print(json.dumps({"systemMessage": _one_line(words)}, ensure_ascii=False))
     except Exception as e:  # noqa: BLE001
-        print(f"rlc codex-hook: {e}", file=sys.stderr)
+        print(f"tw codex-hook: {e}", file=sys.stderr)
 
 
 def cmd_history(args):
@@ -287,10 +287,10 @@ def cmd_auth(args):
     if args.action == "login":
         token = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout.strip()
         if not token or len(token) < 16 or len(token) > 4096:
-            raise RuntimeError("剪贴板里没有像 token 的内容。先按 README 的步骤从扩展里复制 token，再运行 rlc auth login")
+            raise RuntimeError("剪贴板里没有像 token 的内容。先按 README 的步骤从扩展里复制 token，再运行 tw auth login")
         R.save_token(token)
         subprocess.run(["pbcopy"], input="", text=True)  # 清掉剪贴板里的 token
-        print("token 已存入钥匙串（service=rlc-relingo），剪贴板已清空")
+        print("token 已存入钥匙串（service=termwise-relingo），剪贴板已清空")
     token = R.get_token()
     if not token:
         print("未登录：Relingo 模式下按匿名级别判词，不含你的已掌握 / 生词本")
@@ -342,7 +342,7 @@ def main(argv=None) -> int:
     if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help")):
         argv.insert(0, "annotate")
 
-    ap = argparse.ArgumentParser(prog="rlc", description=__doc__,
+    ap = argparse.ArgumentParser(prog="tw", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -416,7 +416,7 @@ def main(argv=None) -> int:
     try:
         args.fn(args)
     except (FileNotFoundError, RuntimeError, ValueError) as e:
-        print(f"rlc: {e}", file=sys.stderr)
+        print(f"tw: {e}", file=sys.stderr)
         return 1
     except (BrokenPipeError, KeyboardInterrupt):
         return 0

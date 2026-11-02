@@ -1,14 +1,14 @@
 {
-  "name": "relingo-words",
+  "name": "termwise",
   "version": "0.1.0",
-  "description": "Lists hard English words (Relingo levels / your Relingo wordbook) with Chinese meanings from each Claude reply, in a side pane and a band above the prompt. Uses the rlc CLI.",
+  "description": "Lists hard English words (Relingo levels / your Relingo wordbook) with Chinese meanings from each Claude reply, in a side pane and a band above the prompt. Uses the tw CLI.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "rlcPath": {
       "type": "string",
-      "title": "rlc command",
-      "description": "rlc executable (name on PATH or absolute path)",
-      "default": "rlc"
+      "title": "tw command",
+      "description": "tw executable (name on PATH or absolute path)",
+      "default": "tw"
     },
     "autoOpenPane": {
       "type": "boolean",

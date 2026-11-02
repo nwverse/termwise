@@ -1,7 +1,7 @@
 {
-  "name": "relingo-words",
+  "name": "termwise",
   "version": "0.1.0",
-  "description": "After each Codex reply, lists the hard English words in it with Chinese meanings, judged by your Relingo level and wordbook (rlc).",
+  "description": "After each Codex reply, lists the hard English words in it with Chinese meanings, judged by your Relingo level and wordbook (tw).",
   "author": { "name": "linshengtao" },
   "license": "MIT",
   "keywords": ["relingo", "vocabulary", "english", "生词"],

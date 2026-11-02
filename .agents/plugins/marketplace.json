@@ -1,10 +1,10 @@
 {
-  "name": "relingo-code",
-  "interface": { "displayName": "relingo-code (local)" },
+  "name": "termwise",
+  "interface": { "displayName": "termwise (local)" },
   "plugins": [
     {
-      "name": "relingo-words",
-      "source": { "source": "local", "path": "./integrations/codex/relingo-words" },
+      "name": "termwise",
+      "source": { "source": "local", "path": "./integrations/codex/termwise" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
       "category": "Productivity"
     }

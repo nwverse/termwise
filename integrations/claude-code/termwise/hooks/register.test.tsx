@@ -10,9 +10,9 @@ const WORDS = {
 const RAN = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
 
 const PANE = {
-  plugin: 'relingo-words',
+  plugin: 'termwise',
   component: 'Pane',
-  requestId: 'relingo-words',
+  requestId: 'termwise',
   props: {
     title: '生词',
     isFocused: false,
@@ -24,7 +24,7 @@ const PANE = {
 } as const
 
 const BAND = {
-  plugin: 'relingo-words',
+  plugin: 'termwise',
   component: 'AbovePrompt',
   props: {
     hasSurvey: false,
@@ -36,7 +36,7 @@ const BAND = {
   },
 } as const
 
-test('a reply runs rlc and its words show in the pane and the band', async ($, on) => {
+test('a reply runs tw and its words show in the pane and the band', async ($, on) => {
   const clock = mock.clock(on)
   mock.env(on, { HOME: '/Users/me', PATH: '/usr/bin:/bin' })
   const calls: string[][] = []
@@ -55,10 +55,10 @@ test('a reply runs rlc and its words show in the pane and the band', async ($, o
     durationMs: 10,
     isAborted: false,
   })
-  // The rlc call runs after the hook returns; let it settle.
+  // The tw call runs after the hook returns; let it settle.
   await clock.advance(10)
 
-  expect(calls[0]).toEqual(['/usr/bin/env', 'rlc', 'agent', '--name', 'claude-code', '--format', 'json'])
+  expect(calls[0]).toEqual(['/usr/bin/env', 'tw', 'agent', '--name', 'claude-code', '--format', 'json'])
   expect(paths[0]).toBe('/Users/me/.local/bin:/opt/homebrew/bin:/usr/bin:/bin')
 
   for (const surface of ['terminal', 'desktop'] as const) {

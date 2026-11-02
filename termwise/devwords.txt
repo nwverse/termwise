@@ -1,5 +1,5 @@
 # 写代码时天天见、默认视为「已认识」的词（COCA 词频低或未收录，但对开发者不是生词）。
-# 每行一个小写词，可按需增删；个人词库请用 rlc known / rlc star。
+# 每行一个小写词，可按需增删；个人词库请用 tw known / tw star。
 anthropic
 api
 args
@@ -146,7 +146,7 @@ render
 repo
 request
 response
-rlc
+tw
 root
 runtime
 schema
