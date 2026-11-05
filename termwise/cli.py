@@ -11,7 +11,7 @@
   tw auth login [--apple|--email A]  浏览器授权登录 Relingo（token 存 macOS 钥匙串）
   tw config init|show|path  配置文件 ~/.config/termwise/config.toml
   tw cache clear            清空 Relingo 结果缓存
-  tw known|star|forget W..  本地个人词库（叠加在 Relingo 结果之上）
+  tw known|star|forget W..  个人词库（本地，登录后同步到 Relingo 账号）
   tw import-relingo F.csv   导入 Relingo 导出的 CSV
   tw build-db ecdict.csv    构建本地词库
 """
@@ -334,8 +334,22 @@ def cmd_cache(args):
 
 
 def cmd_mark(args):
-    UserStore().mark(args.words, args.cmd)
-    print(f"{args.cmd}: {' '.join(args.words)}（本地词库）")
+    from . import relingo as R
+    words = [w.strip().lower() for w in args.words if w.strip()]
+    UserStore().mark(words, args.cmd)
+    token = R.get_token()
+    if not token:
+        print(f"{args.cmd}: {' '.join(words)}（本地词库；未登录 Relingo，没有同步）")
+        return
+    cfg = C.load()
+    lex = R.RelingoLexicon(cfg["relingo"], "", data_dir(), None, None)
+    lex.client.token = token
+    try:
+        lex.sync_mark(words, args.cmd)
+    except R.RelingoError as e:
+        print(f"{args.cmd}: {' '.join(words)}（本地词库；Relingo 同步失败：{e}）")
+        sys.exit(3)
+    print(f"{args.cmd}: {' '.join(words)}（本地词库，已同步 Relingo）")
 
 
 def cmd_import(args):
@@ -416,7 +430,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_cache)
 
     for name, h in (("known", "标记为已掌握"), ("star", "加入生词本（总是高亮）"), ("forget", "从个人词库移除")):
-        p = sub.add_parser(name, help=h + "（本地，叠加在 Relingo 结果之上）")
+        p = sub.add_parser(name, help=h + "（本地词库，登录后同步到 Relingo 账号）")
         p.add_argument("words", nargs="+")
         p.set_defaults(fn=cmd_mark)
 

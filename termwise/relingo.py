@@ -363,6 +363,29 @@ class RelingoLexicon:
     def user_info(self) -> dict:
         return self.client.call("getUserInfo", {})
 
+    def sync_mark(self, words: list[str], kind: str):
+        """把 tw known / star / forget 同步到 Relingo 账号，调用方式与扩展相同（content.js）：
+        已掌握 = submitVocabulary(mastered 词书)，生词本 = submitVocabulary(当前生词本, strange)，
+        取消用 removeVocabularyWords / removeStarWord。star 时同时移出已掌握，与本地 mark 一致。"""
+        books = self.client.call("getVocabularyList", {}) or []
+        en = [b for b in books if b.get("lang") == "en"]
+        mastered = next((b.get("_id") for b in en if b.get("id") == "mastered"), None) or "mastered"
+        current = next((b for b in en if b.get("active") and b.get("isCurrent")), None) \
+            or next((b for b in en if b.get("id") == "default"), None)
+        strange = (current or {}).get("_id") or "default"
+        if kind == "known":
+            self.client.call("submitVocabulary", {"id": mastered, "type": "mastered", "words": words})
+        elif kind == "star":
+            self.client.call("removeVocabularyWords", {"id": mastered, "words": words})
+            self.client.call("submitVocabulary", {"id": strange, "type": "strange", "words": words})
+        elif kind == "forget":
+            self.client.call("removeVocabularyWords", {"id": mastered, "words": words})
+            for w in words:
+                self.client.call("removeStarWord", {"word": w})
+        # 缓存里这些词的 mastered / stared 已过期
+        self.db.executemany("DELETE FROM words WHERE word=?", [(w,) for w in words])
+        self.db.commit()
+
     def clear_cache(self) -> int:
         n = self.db.execute("DELETE FROM words").rowcount
         self.db.execute("DELETE FROM state")

@@ -20,6 +20,7 @@ class StubClient:
 
     def call(self, fn, body):
         self.bodies.append(body)
+        self.calls = getattr(self, "calls", []) + [(fn, body)]
         r = self.responses.pop(0)
         if isinstance(r, Exception):
             raise r
@@ -64,6 +65,23 @@ class RelingoTest(unittest.TestCase):
             n = lex.db.execute("SELECT count(*) FROM words").fetchone()[0]
             self.assertEqual(n, 0)
 
+
+    def test_sync_mark_uses_the_extension_calls(self):
+        books = [{"_id": "s1", "id": "default", "lang": "en", "type": "strange"},
+                 {"id": "relingo-GRE", "lang": "en", "type": "builtin"},
+                 {"_id": "m1", "id": "mastered", "lang": "en", "type": "mastered"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            lex = lexicon(tmp, [books, {}, books, {}, {}, books, {}, {}])
+            lex.sync_mark(["ephemeral"], "known")
+            lex.sync_mark(["ephemeral"], "star")
+            lex.sync_mark(["ephemeral"], "forget")
+            self.assertEqual([c for c in lex.client.calls if c[0] != "getVocabularyList"], [
+                ("submitVocabulary", {"id": "m1", "type": "mastered", "words": ["ephemeral"]}),
+                ("removeVocabularyWords", {"id": "m1", "words": ["ephemeral"]}),
+                ("submitVocabulary", {"id": "s1", "type": "strange", "words": ["ephemeral"]}),
+                ("removeVocabularyWords", {"id": "m1", "words": ["ephemeral"]}),
+                ("removeStarWord", {"word": "ephemeral"}),
+            ])
 
 if __name__ == "__main__":
     unittest.main()
