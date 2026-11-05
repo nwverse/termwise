@@ -20,6 +20,43 @@ const isBandHidden = atom(
   { plugin: 'termwise', key: 'isBandHidden' } as const,
   false,
 )
+const isInlineHidden = atom(
+  { plugin: 'termwise', key: 'isInlineHidden' } as const,
+  false,
+)
+
+// Short gloss for inline use: the first sense after the part-of-speech or
+// field tag ("adj. 细致，一丝不苟" → "细致", "[计] 幂等" → "幂等").
+function gloss(translation: string): string {
+  const s = translation.replace(/^\s*(\[[^\]]*\]|[a-z]+\.)\s*/i, '')
+  return (s.split(/[，,；;]/)[0] ?? '').trim()
+}
+
+// Markdown spans never annotated: fenced and inline code, link targets, URLs.
+const SKIP = /```[\s\S]*?(?:```|$)|`[^`\n]*`|\]\([^)]*\)|https?:\/\/\S+/g
+const WORD = /[A-Za-z][A-Za-z'-]*[A-Za-z]/g
+
+// Like the Relingo extension: "meticulous" → "meticulous（细致）", first
+// occurrence of each word only, prose only.
+export function annotate(text: string, dict: Map<string, string>): string {
+  if (dict.size === 0) return text
+  const seen = new Set<string>()
+  const mark = (prose: string) =>
+    prose.replace(WORD, w => {
+      const key = w.toLowerCase()
+      const g = dict.get(key)
+      if (!g || seen.has(key)) return w
+      seen.add(key)
+      return `${w}（${g}）`
+    })
+  let out = ''
+  let last = 0
+  for (const m of text.matchAll(SKIP)) {
+    out += mark(text.slice(last, m.index)) + m[0]
+    last = (m.index ?? 0) + m[0].length
+  }
+  return out + mark(text.slice(last))
+}
 
 // Terminal cells a string takes: CJK and full-width characters count two.
 function cells(s: string): number {
@@ -50,6 +87,46 @@ async function runRlc($: EngineInterface, tw: string, args: string[], stdin?: st
   })
 }
 
+// `tw star` (word book, always marked) or `tw known` (ignored from then on);
+// both also sync to the Relingo account when logged in. Says how it went.
+async function mark($: EngineInterface, tw: string, picked: string[], kind: 'star' | 'known') {
+  const out = await runRlc($, tw, [kind, ...picked])
+  const said = (out.stdout.trim() || out.stderr.trim()).slice(0, 300)
+  if (out.exitCode === 0 || out.exitCode === 3) { // 3: kept locally, Relingo sync failed
+    const set = new Set(picked)
+    if (kind === 'known') await update($, known, ks => [...ks, ...picked])
+    else await update($, turns, list => list.map(t => ({
+      ...t,
+      words: t.words.map(w => (set.has(w.lemma.toLowerCase()) || set.has(w.word.toLowerCase()) ? { ...w, starred: true } : w)),
+    })))
+  }
+  return said || `tw ${kind} exit ${out.exitCode}`
+}
+
+function parseWords(text: string): string[] {
+  return [...new Set(text.split(/[\s,，]+/).filter(w => /^[A-Za-z][A-Za-z'-]*$/.test(w)).map(w => w.toLowerCase()))]
+}
+
+// AskUserQuestion with the latest reply's words (the dialog takes four at
+// most; "Other" types any word), then mark the choices. Callers do not wait
+// on it: a hook has 10s and the person may take longer.
+async function askAndMark($: EngineInterface, tw: string, kind: 'star' | 'known') {
+  const hide = new Set(await read($, known))
+  const words = ((await read($, turns)).at(-1)?.words ?? []).filter(w => !hide.has(w.lemma))
+  const options = words.filter(w => kind === 'known' || !w.starred).slice(0, 4).map(w => w.lemma)
+  const question = kind === 'star'
+    ? 'Add which words to your word book?'
+    : 'Which words do you know? They will be ignored from now on.'
+  let answer: string
+  try {
+    answer = await $.ui.ask(question, { options, header: kind === 'star' ? '生词本' : '已掌握', multiSelect: true })
+  } catch {
+    return // dismissed
+  }
+  const picked = parseWords(answer)
+  if (picked.length > 0) $.ui.toast(await mark($, tw, picked, kind))
+}
+
 export const register: Register = (on, options) => {
   const tw = String(options.rlcPath || 'tw')
   const autoOpen = options.autoOpenPane !== false
@@ -57,7 +134,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'termwise',
-      description: '生词 pane：/termwise [open|close|band|clear]',
+      description: '生词 pane：/termwise [open|close|band|inline|clear|star [词…]|known [词…]]',
     })
     if (autoOpen) void $.ui.open({ id: PANE, title: TITLE })
 
@@ -73,6 +150,17 @@ export const register: Register = (on, options) => {
     if (arg === 'band') {
       const hidden = await update($, isBandHidden, v => !v)
       return { text: hidden ? '已隐藏提示栏上方的生词行。' : '已显示提示栏上方的生词行。' }
+    }
+    if (arg === 'inline') {
+      const hidden = await update($, isInlineHidden, v => !v)
+      return { text: hidden ? '已关闭回复里的括号释义。' : '已打开回复里的括号释义。' }
+    }
+    const [sub = '', ...rest] = arg.split(/\s+/)
+    if (sub === 'star' || sub === 'known') {
+      const picked = parseWords(rest.join(' '))
+      if (picked.length > 0) return { text: await mark($, tw, picked, sub) }
+      void askAndMark($, tw, sub)
+      return { text: sub === 'star' ? 'Pick words for your word book in the dialog.' : 'Pick the words you know in the dialog.' }
     }
     if (arg === 'clear') {
       await update($, turns, () => [])
@@ -105,6 +193,25 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // Rewrites only the drawing; the stored reply (and what the model reads) is
+  // unchanged. Words come from the stored turns, so a reply is annotated once
+  // its tw run lands, and the read redraws it then.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (e.props.isSummary || (await read($, isInlineHidden))) return next(e)
+    const hide = new Set(await read($, known))
+    const dict = new Map<string, string>()
+    for (const t of await read($, turns)) {
+      for (const w of t.words) {
+        const g = gloss(w.translation)
+        if (!g || hide.has(w.lemma)) continue
+        dict.set(w.word.toLowerCase(), g)
+        dict.set(w.lemma.toLowerCase(), g)
+      }
+    }
+    const text = annotate(e.props.text, dict)
+    return next(text === e.props.text ? e : { ...e, props: { ...e.props, text } })
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || e.props.isWorking || (await read($, isBandHidden))) return next(e)
     const last = (await read($, turns)).at(-1)
@@ -121,7 +228,9 @@ export const register: Register = (on, options) => {
       <Box>
         <Text color="cyan">生词 </Text>
         <Text dimColor wrap="truncate-end">{line} </Text>
-        <Button key="hide-band" label="×" onPress={() => update($, isBandHidden, () => true)} />
+        <Button key="star-band" label="+" onPress={() => void askAndMark($, tw, 'star')} />
+        <Button key="known-band" label="-" onPress={() => void askAndMark($, tw, 'known')} />
+        <Button key="hide-band" label="x" onPress={() => update($, isBandHidden, () => true)} />
       </Box>
     )
   })

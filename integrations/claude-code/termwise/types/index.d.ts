@@ -17,6 +17,8 @@ declare module 'claude-code' {
       // Words marked known from the pane this session (hidden from then on).
       known: string[]
       isBandHidden: boolean
+      // `/termwise inline` turns off the （释义） drawn inside replies.
+      isInlineHidden: boolean
     }
   }
 }
