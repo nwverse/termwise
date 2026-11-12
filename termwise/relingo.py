@@ -103,14 +103,23 @@ def _remove_credentials_file():
 
 
 def delete_token() -> bool:
+    """返回是否本来保存过 token。真的删除失败要抛 RuntimeError，
+    不能折叠成「没有保存过 token」——那会让 logout 返回成功而 token 还在。"""
     try:
         r = subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE,
                             "-a", KEYCHAIN_ACCOUNT], capture_output=True, text=True)
         deleted = r.returncode == 0
+        if not deleted and "could not be found" not in r.stderr:
+            # item-not-found 只是没存过；交互被拒、钥匙串锁死等才是删除失败
+            raise RuntimeError(f"删除钥匙串里的 token 失败：{r.stderr.strip() or f'exit {r.returncode}'}")
     except OSError:  # 非 macOS：没有 security 命令
         deleted = False
     had_file = os.path.exists(credentials_path())
-    _remove_credentials_file()
+    if had_file:
+        try:
+            os.remove(credentials_path())
+        except OSError as e:
+            raise RuntimeError(f"删除凭据文件 {credentials_path()} 失败：{e}") from e
     return deleted or had_file
 
 
