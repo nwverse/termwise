@@ -144,14 +144,24 @@ def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int =
         yield batch
 
 
+def _read_all(files) -> str:
+    """--list 把多个输入拼成一段文本。文件末尾没有换行时补一个，
+    否则前一个文件的末词会和下一个文件的首词合并成一个不存在的词。"""
+    parts = []
+    for f in files:
+        t = sys.stdin.read() if f == "-" else open(f, encoding="utf-8", errors="replace").read()
+        if t and not t.endswith("\n"):
+            t += "\n"
+        parts.append(t)
+    return "".join(parts)
+
+
 def cmd_annotate(args):
     ann = _annotator(args)
     color = _color(args)
     files = args.files or ["-"]
     if args.list:
-        text = "".join(sys.stdin.read() if f == "-" else open(f, encoding="utf-8", errors="replace").read()
-                       for f in files)
-        return _print_list(_collect(ann, text), color, args.phonetic)
+        return _print_list(_collect(ann, _read_all(files)), color, args.phonetic)
     sys.stdout.reconfigure(line_buffering=True)
     for f in files:
         stream = sys.stdin if f == "-" else open(f, encoding="utf-8", errors="replace")
