@@ -130,7 +130,7 @@ def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int =
             buf += chunk
             *lines, buf = buf.split(b"\n")
             for l in lines:
-                batch.append(l.decode("utf-8", "replace") + "\n")
+                batch.append(l.decode("utf-8", "surrogateescape") + "\n")
             if batch and first is None:
                 first = time.time()
             if len(batch) < max_lines and (first is None or time.time() - first < max_wait):
@@ -139,7 +139,7 @@ def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int =
             yield batch
             batch, first = [], None
     if buf:
-        batch.append(buf.decode("utf-8", "replace"))
+        batch.append(buf.decode("utf-8", "surrogateescape"))
     if batch:
         yield batch
 
@@ -152,7 +152,7 @@ def cmd_annotate(args):
         text = "".join(sys.stdin.read() if f == "-" else open(f, encoding="utf-8", errors="replace").read()
                        for f in files)
         return _print_list(_collect(ann, text), color, args.phonetic)
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(line_buffering=True, errors="surrogateescape")
     for f in files:
         stream = sys.stdin if f == "-" else open(f, encoding="utf-8", errors="replace")
         for batch in _batches(stream):
