@@ -59,6 +59,10 @@ def _local_lexicon():
 
 
 def _lexicon(cfg: dict, source: str, level: str):
+    # -s 有 choices 校验，TW_SOURCE / config.toml 也要同样拒绝非法值，
+    # 否则拼写错误会被静默当成 local，绕过 Relingo 判定
+    if source not in ("relingo", "local"):
+        raise ValueError(f"无效的来源 {source!r}，可选 relingo|local")
     local = _local_lexicon()
     if source == "relingo":
         from .relingo import RelingoLexicon, get_token
