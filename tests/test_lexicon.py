@@ -64,6 +64,18 @@ class EcdictLexiconTest(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertFalse(self.is_hard(word))
 
+    def test_all_annotates_every_occurrence_on_one_line(self):
+        # --all：同一行重复出现的生词也要逐个标注，不再按 lemma 逐行去重
+        line = "untoward untoward untoward"
+        every = Annotator(self.lex, self.ann.store, LEVELS["intermediate"], once=False)
+        hits = every.hits(line)
+        self.assertEqual([h.word.text for h in hits], ["untoward"] * 3)
+        self.assertEqual([h.word.start for h in hits], [0, 9, 18])
+        # 默认 once=True 仍只标首次
+        first = Annotator(self.lex, self.ann.store, LEVELS["intermediate"])
+        self.assertEqual(len(first.hits(line)), 1)
+        self.assertEqual(first.hits(line), [])
+
 
 if __name__ == "__main__":
     unittest.main()

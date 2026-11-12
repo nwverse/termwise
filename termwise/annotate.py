@@ -62,7 +62,8 @@ class Annotator:
         out, local = [], set()
         for w in words:
             e = entries.get(w.norm)
-            if not e or e.word in local:
+            # 逐行去重同样受 once 控制：--all 时同一行的每次出现都要标注
+            if not e or (self.once and e.word in local):
                 continue
             hard, starred = self.is_hard(w, e)
             if not hard:
