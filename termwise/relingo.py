@@ -323,8 +323,14 @@ class RelingoLexicon:
                      hard=is_highlightable(item), starred=bool(item.get("stared")), source="relingo")
 
     def _sendable(self, words: list[str]) -> list[str]:
-        if not self.cfg.get("only_dictionary_words", True) or not self.fallback:
+        if not self.cfg.get("only_dictionary_words", True):
             return words
+        if not self.fallback:
+            # 过滤开启但没有词典：无法判断哪些词可以发送，一个都不发，而不是全部放行
+            if words:
+                self._warn("no-dictionary", "没有本地词库，only_dictionary_words 开启时不向 Relingo 发送任何词；"
+                           "先运行 scripts/fetch-ecdict.sh 构建，或在配置中设 only_dictionary_words = false")
+            return []
         known = self.fallback.lookup(words)
         return [w for w in words if w in known]
 

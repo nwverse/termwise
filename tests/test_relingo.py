@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import unittest
 from unittest import mock
 
 from termwise import relingo
+from termwise.lexicon import EcdictLexicon, build_db
 
 from termwise.relingo import RelingoError, RelingoLexicon, _translation, is_highlightable
 
@@ -264,6 +266,61 @@ class RelingoTest(unittest.TestCase):
             self.assertFalse(relingo.delete_token())
             with self.assertRaises(RuntimeError):
                 relingo.save_token("abc")
+
+
+class OnlyDictionaryWordsTest(unittest.TestCase):
+    """only_dictionary_words 开启时，没有本地词典也不能把未知词发给 Relingo（#27）。"""
+
+    def _lexicon(self, tmp, fallback, only=True):
+        lex = RelingoLexicon(dict(CFG, only_dictionary_words=only), "relingo-Intermediate",
+                             tmp, fallback, None)
+        lex.client = StubClient([{"words": []}] * 3)
+        self.addCleanup(lex.db.close)
+        return lex
+
+    def _ecdict(self, tmp, words):
+        csv_path = os.path.join(tmp, "ecdict.csv")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["word", "phonetic", "translation", "bnc", "frq", "tag", "exchange"])
+            for word in words:
+                w.writerow([word, "", f"a. {word} 的释义", "5000", "5000", "", ""])
+        db_path = os.path.join(tmp, "dict", "ecdict.db")
+        build_db(csv_path, db_path)
+        local = EcdictLexicon(db_path)
+        self.addCleanup(local.db.close)
+        return local
+
+    def test_missing_dictionary_sends_nothing_and_warns_once(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            lex = self._lexicon(tmp, None)
+            self.assertEqual(lex.lookup(["syntheticprivateidentifier", "ephemeral"]), {})
+            self.assertEqual(lex.lookup(["anotherprivateidentifier"]), {})
+            self.assertEqual(lex.client.calls, [])
+            self.assertEqual(err.getvalue().count("tw: "), 1)
+            self.assertIn("only_dictionary_words", err.getvalue())
+
+    def test_empty_dictionary_sends_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lex = self._lexicon(tmp, self._ecdict(tmp, []))
+            self.assertEqual(lex.lookup(["syntheticprivateidentifier"]), {})
+            self.assertEqual(lex.client.calls, [])
+
+    def test_only_dictionary_words_are_sent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lex = self._lexicon(tmp, self._ecdict(tmp, ["ephemeral"]))
+            lex.lookup(["ephemeral", "syntheticprivateidentifier"])
+            self.assertEqual([b["words"] for b in lex.client.bodies], [["ephemeral"]])
+
+    def test_filter_disabled_without_dictionary_sends_all(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            lex = self._lexicon(tmp, None, only=False)
+            lex.lookup(["ephemeral", "syntheticprivateidentifier"])
+            self.assertEqual([b["words"] for b in lex.client.bodies],
+                             [["ephemeral", "syntheticprivateidentifier"]])
+            self.assertEqual(err.getvalue(), "")
 
 
 if __name__ == "__main__":
