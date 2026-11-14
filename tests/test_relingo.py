@@ -266,5 +266,107 @@ class RelingoTest(unittest.TestCase):
                 relingo.save_token("abc")
 
 
+def _item(mastered=False):
+    return {"word": "ephemeral", "mastered": mastered,
+            "translations": [{"pos": "ADJ", "target": "短暂"}]}
+
+
+class MemoryCacheExpiryTest(unittest.TestCase):
+    """#29：同一实例（tail -f … | tw -a）里，内存结果也要按 TTL / 退避到期后重新查询。
+    用真实 Client，只替换 urlopen 和时钟。"""
+
+    TTL = 3600.0
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.now = 1_000_000.0
+        clock = mock.patch.object(relingo.time, "time", side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        net = mock.patch.object(relingo.urllib.request, "urlopen", side_effect=self._respond)
+        net.start()
+        self.addCleanup(net.stop)
+        self.responses, self.sent = [], []
+        self.lex = self._open()
+
+    def _open(self, ttl=None):
+        ttl = self.TTL if ttl is None else ttl
+        lex = RelingoLexicon(dict(CFG, cache_ttl_hours=ttl / 3600), "relingo-Intermediate",
+                             self.tmp, None)
+        self.addCleanup(lex.db.close)
+        return lex
+
+    def _respond(self, req, timeout):
+        self.sent.append(json.loads(req.data)["words"])
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return io.BytesIO(json.dumps({"code": 0, "data": r}).encode())
+
+    def test_positive_entry_expires_after_ttl(self):
+        self.responses = [{"words": [_item(mastered=False)]}, {"words": [_item(mastered=True)]}]
+        self.assertTrue(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.now += self.TTL - 1
+        self.assertTrue(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(len(self.sent), 1)  # TTL 内不重复请求
+        self.now += 2
+        self.assertFalse(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(self.sent, [["ephemeral"], ["ephemeral"]])
+
+    def test_negative_entry_expires_after_ttl(self):
+        self.responses = [{"words": []}, {"words": [_item()]}]
+        self.assertEqual(self.lex.lookup(["ephemeral"]), {})
+        self.now += self.TTL + 1
+        self.assertIn("ephemeral", self.lex.lookup(["ephemeral"]))
+        self.assertEqual(len(self.sent), 2)
+
+    def test_expired_memory_prefers_fresher_disk_row(self):
+        self.responses = [{"words": [_item(mastered=False)]}, {"words": [_item(mastered=True)]}]
+        self.lex.lookup(["ephemeral"])
+        self.now += self.TTL + 1
+        other = self._open()  # 另一个进程已经刷新过磁盘缓存
+        self.assertFalse(other.lookup(["ephemeral"])["ephemeral"].hard)
+        self.now += 1
+        self.assertFalse(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_zero_ttl_keeps_memory_for_min_lifetime(self):
+        lex = self._open(ttl=0)
+        self.responses = [{"words": [_item()]}, {"words": [_item(mastered=True)]}]
+        self.assertTrue(lex.lookup(["ephemeral"])["ephemeral"].hard)  # prefetch()
+        self.now += 0.5
+        self.assertTrue(lex.lookup(["ephemeral"])["ephemeral"].hard)  # 同一批逐行 hits()
+        self.now += 30
+        lex.lookup(["ephemeral"])  # 相邻几行
+        self.assertEqual(len(self.sent), 1)
+        self.now += relingo.MEM_MIN_LIFETIME
+        self.assertFalse(lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_transient_failure_is_retried_after_backoff(self):
+        self.responses = [relingo.urllib.error.URLError("offline"), {"words": [_item()]}]
+        self.assertEqual(self.lex.lookup(["ephemeral"]), {})
+        self.now += 10  # 仍在 30s 退避期内：不重试
+        self.assertEqual(self.lex.lookup(["ephemeral"]), {})
+        self.assertEqual(len(self.sent), 1)
+        self.now += 25
+        self.assertTrue(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(len(self.sent), 2)
+        self.now += 1  # 恢复后的结果按 TTL 正常缓存
+        self.lex.lookup(["ephemeral"])
+        self.assertEqual(len(self.sent), 2)
+
+    def test_fallback_during_backoff_is_retried_when_backoff_ends(self):
+        self.lex.client._set_state(down_until=self.now + 100)
+        self.responses = [{"words": [_item()]}]
+        self.assertEqual(self.lex.lookup(["ephemeral"]), {})
+        self.assertEqual(self.sent, [])
+        self.now += 101
+        self.assertIn("ephemeral", self.lex.lookup(["ephemeral"]))
+        self.assertEqual(len(self.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
