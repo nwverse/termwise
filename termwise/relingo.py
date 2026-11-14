@@ -25,6 +25,10 @@ KEYCHAIN_ACCOUNT = "token"
 EXTENSION_ID = "dpphkcfmnbkdpmgneljgdhfnccnhmfig"
 AUTH_ERRORS = {"invalid signature", "illegal user token", "missing user token"}
 AUTH_CODES = {2001, 2002}
+# 内存结果的最短寿命（秒）。cache_ttl_hours <= 0（不缓存）时内存结果若立即过期，同一批的
+# prefetch() 与逐行 hits() 会各发一次请求；保留一分钟覆盖一批及相邻几行，过后仍会重新查询。
+# 只作用于内存：磁盘缓存仍按 TTL 判定新鲜度，退避期间的回退结果仍在退避结束时到期。
+MEM_MIN_LIFETIME = 60.0
 POS = {"ADJ": "adj.", "NOUN": "n.", "VERB": "v.", "ADV": "adv.", "PRON": "pron.",
        "ADP": "prep.", "CONJ": "conj.", "CCONJ": "conj.", "NUM": "num.", "INTJ": "int.",
        "DET": "det.", "AUX": "aux.", "PROPN": "n."}
@@ -356,6 +360,9 @@ class RelingoLexicon:
     def _ttl(self) -> float:
         return float(self.cfg["cache_ttl_hours"]) * 3600
 
+    def _ttl_until(self, fetched_at: float, now: float) -> float:
+        return max(fetched_at + self._ttl(), now + MEM_MIN_LIFETIME)
+
     def _remember(self, word: str, entry: Optional[Entry], until: float):
         self.mem[word] = entry
         self.mem_expires[word] = until
@@ -380,7 +387,8 @@ class RelingoLexicon:
                         if at >= fresh_after:
                             rows[w] = (item, at)
             for w, (item, at) in rows.items():
-                self._remember(w, self._entry(w, json.loads(item) if item else None), at + ttl)
+                self._remember(w, self._entry(w, json.loads(item) if item else None),
+                               self._ttl_until(at, now))
                 self.stats["cached"] += 1
             todo = [w for w in todo if w not in rows]
         # 2) 只把本地词典认识的词发给服务端；其余词不发，视为非生词
@@ -474,7 +482,7 @@ class RelingoLexicon:
             rows = []
             for w in chunk:
                 it = items.get(w)
-                self._remember(w, self._entry(w, it), now + self._ttl())
+                self._remember(w, self._entry(w, it), self._ttl_until(now, now))
                 if cache_level:
                     rows.append((cache_level, w, json.dumps(it, ensure_ascii=False) if it else None, now))
             if rows:
@@ -489,7 +497,7 @@ class RelingoLexicon:
         now = time.time()
         row = self.db.execute("SELECT value FROM state WHERE key='down_until'").fetchone()
         down_until = float(row[0]) if row else 0.0
-        until = down_until if down_until > now else now + self._ttl()
+        until = down_until if down_until > now else self._ttl_until(now, now)
         for w in words:
             self._remember(w, local.get(w), until)
 

@@ -348,8 +348,9 @@ class MemoryCacheExpiryTest(unittest.TestCase):
         self.responses, self.sent = [], []
         self.lex = self._open()
 
-    def _open(self):
-        lex = RelingoLexicon(dict(CFG, cache_ttl_hours=self.TTL / 3600), "relingo-Intermediate",
+    def _open(self, ttl=None):
+        ttl = self.TTL if ttl is None else ttl
+        lex = RelingoLexicon(dict(CFG, cache_ttl_hours=ttl / 3600), "relingo-Intermediate",
                              self.tmp, None)
         self.addCleanup(lex.db.close)
         return lex
@@ -386,6 +387,19 @@ class MemoryCacheExpiryTest(unittest.TestCase):
         self.assertFalse(other.lookup(["ephemeral"])["ephemeral"].hard)
         self.now += 1
         self.assertFalse(self.lex.lookup(["ephemeral"])["ephemeral"].hard)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_zero_ttl_keeps_memory_for_min_lifetime(self):
+        lex = self._open(ttl=0)
+        self.responses = [{"words": [_item()]}, {"words": [_item(mastered=True)]}]
+        self.assertTrue(lex.lookup(["ephemeral"])["ephemeral"].hard)  # prefetch()
+        self.now += 0.5
+        self.assertTrue(lex.lookup(["ephemeral"])["ephemeral"].hard)  # 同一批逐行 hits()
+        self.now += 30
+        lex.lookup(["ephemeral"])  # 相邻几行
+        self.assertEqual(len(self.sent), 1)
+        self.now += relingo.MEM_MIN_LIFETIME
+        self.assertFalse(lex.lookup(["ephemeral"])["ephemeral"].hard)
         self.assertEqual(len(self.sent), 2)
 
     def test_transient_failure_is_retried_after_backoff(self):
