@@ -167,7 +167,11 @@ def cmd_annotate(args):
     if args.list:
         return _print_list(_collect(ann, _read_all(files)), color, args.phonetic)
     sys.stdout.reconfigure(line_buffering=True)
+    dangling = False  # 上一次输出是否停在行中（原行末尾无换行且没有注脚）
     for f in files:
+        if dangling:  # 前一个文件末行无换行时补一个，免得和下一个文件首行粘连
+            sys.stdout.write("\n")
+            dangling = False
         stream = sys.stdin if f == "-" else open(f, encoding="utf-8", errors="replace")
         for batch in _batches(stream):
             bodies = [raw.rstrip("\n") for raw in batch]
@@ -178,8 +182,10 @@ def cmd_annotate(args):
                     for h in hits:
                         print(A.hit_json(h))
                     continue
-                sys.stdout.write(A.render_line(body, hits, color, args.phonetic)
-                                 + ("\n" if raw.endswith("\n") else ""))
+                # 有注脚时注脚行总以换行结尾；只有原样透传的行才保留"原行无换行就不补"
+                end = "\n" if hits or raw.endswith("\n") else ""
+                sys.stdout.write(A.render_line(body, hits, color, args.phonetic) + end)
+                dangling = not end and bool(body)
 
 
 def cmd_screen(args):
