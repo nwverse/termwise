@@ -1,8 +1,10 @@
 import io
+import json
 import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -19,6 +21,7 @@ class StubClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.bodies = []
+        self.calls = []
         self.token = None
 
     def available(self):
@@ -33,9 +36,10 @@ class StubClient:
         return r
 
 
-def lexicon(tmp, responses):
-    lex = RelingoLexicon(dict(CFG), "relingo-Intermediate", tmp, None, None)
+def lexicon(tmp, responses, token=None):
+    lex = RelingoLexicon(dict(CFG), "relingo-Intermediate", tmp, None, token)
     lex.client = StubClient(responses)
+    lex.client.token = token
     return lex
 
 
@@ -62,6 +66,74 @@ class RelingoTest(unittest.TestCase):
             lex2 = lexicon(tmp, [])
             self.assertEqual(set(lex2.lookup(["ephemeral", "the"])), {"ephemeral"})
             self.assertEqual(lex2.client.bodies, [])
+
+    def test_authenticated_cache_is_partitioned_by_stable_account(self):
+        item = {"word": "ephemeral", "stared": True,
+                "translations": [{"pos": "ADJ", "target": "短暂"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            first_a = lexicon(tmp, [{"_id": "account-a"}, {"words": [item]}], "token-a-1")
+            self.assertTrue(first_a.lookup(["ephemeral"])["ephemeral"].starred)
+
+            # 同一 token 第二次打开直接使用本地账号映射，连 getUserInfo 也不请求。
+            known_a = lexicon(tmp, [], "token-a-1")
+            self.assertTrue(known_a.lookup(["ephemeral"])["ephemeral"].starred)
+            self.assertEqual(known_a.client.calls, [])
+
+            b = lexicon(tmp, [{"_id": "account-b"}, {"words": []}], "token-b")
+            self.assertEqual(b.lookup(["ephemeral"]), {})
+            self.assertEqual([fn for fn, _ in b.client.calls], ["getUserInfo", "parseContent3"])
+
+            # 同一账号换新 token 后只重新识别一次账号，仍命中原缓存。
+            reopened_a = lexicon(tmp, [{"_id": "account-a"}], "token-a-2")
+            entry = reopened_a.lookup(["ephemeral"])["ephemeral"]
+            self.assertTrue(entry.starred)
+            self.assertEqual(reopened_a.stats["cached"], 1)
+            self.assertEqual([fn for fn, _ in reopened_a.client.calls], ["getUserInfo"])
+
+    def test_known_token_cache_hit_works_offline(self):
+        item = {"word": "ephemeral", "stared": True,
+                "translations": [{"pos": "ADJ", "target": "短暂"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            first = lexicon(tmp, [{"_id": "account-a"}, {"words": [item]}], "token-a")
+            first.lookup(["ephemeral"])
+
+            offline = lexicon(tmp, [], "token-a")
+            with mock.patch.object(offline.client, "available", return_value=(False, "offline")) as available:
+                entry = offline.lookup(["ephemeral"])["ephemeral"]
+            self.assertTrue(entry.starred)
+            self.assertEqual(offline.client.calls, [])
+            available.assert_not_called()
+
+    def test_unknown_token_resolution_respects_backoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lex = lexicon(tmp, [], "token-a")
+            with mock.patch.object(lex.client, "available", return_value=(False, "backoff")):
+                self.assertEqual(lex.lookup(["ephemeral"]), {})
+            self.assertEqual(lex.client.calls, [])
+
+    def test_unresolved_account_does_not_persist_authenticated_entries(self):
+        item = {"word": "ephemeral", "stared": True,
+                "translations": [{"pos": "ADJ", "target": "短暂"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            lex = lexicon(tmp, [{}, {"words": [item]}], "token-a")
+            self.assertIn("ephemeral", lex.lookup(["ephemeral"]))
+            self.assertEqual(lex.db.execute("SELECT count(*) FROM words").fetchone()[0], 0)
+            self.assertEqual(lex.db.execute("SELECT count(*) FROM account_tokens").fetchone()[0], 0)
+
+    def test_legacy_shared_user_cache_is_invalidated(self):
+        item = {"word": "ephemeral", "stared": True,
+                "translations": [{"pos": "ADJ", "target": "短暂"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = lexicon(tmp, [])
+            seed.db.execute("INSERT INTO words VALUES (?,?,?,?)",
+                            ("relingo-Intermediate|user", "ephemeral", json.dumps(item), time.time()))
+            seed.db.commit()
+
+            b = lexicon(tmp, [{"_id": "account-b"}, {"words": []}], "token-b")
+            self.assertEqual(b.lookup(["ephemeral"]), {})
+            self.assertEqual([fn for fn, _ in b.client.calls], ["getUserInfo", "parseContent3"])
+            legacy = b.db.execute("SELECT count(*) FROM words WHERE level LIKE '%|user'").fetchone()[0]
+            self.assertEqual(legacy, 0)
 
     def test_failure_falls_back_without_caching(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,7 @@
 token 存在 macOS 钥匙串（service=termwise-relingo），不写文件、不打印。
 """
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -285,9 +286,23 @@ class RelingoLexicon:
             CREATE TABLE IF NOT EXISTS words (level TEXT, word TEXT, item TEXT, fetched_at REAL,
                                               PRIMARY KEY (level, word));
             CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value REAL);
+            CREATE TABLE IF NOT EXISTS account_tokens (token_hash TEXT PRIMARY KEY,
+                                                       account_key TEXT NOT NULL);
         """)
+        # 旧的 |user 行无法判断属于哪个账号，只能失效，不能迁移给当前登录者。
+        self.db.execute("DELETE FROM words WHERE level LIKE '%|user'")
+        self.db.commit()
         self.client = Client(cfg, self.db, token)
         self.authenticated = bool(token)
+        self._token_fingerprint = None
+        if token:
+            self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        self._account_key: Optional[str] = None
+        if self._token_fingerprint:
+            row = self.db.execute("SELECT account_key FROM account_tokens WHERE token_hash=?",
+                                  (self._token_fingerprint,)).fetchone()
+            self._account_key = row[0] if row else None
+        self._account_key_ready = bool(self._account_key)
         self.mem: dict[str, Optional[Entry]] = {}
         self.warned: set[str] = set()
         self.stats = {"requests": 0, "cached": 0, "fallback": 0}
@@ -322,12 +337,14 @@ class RelingoLexicon:
             ttl = float(self.cfg["cache_ttl_hours"]) * 3600
             fresh_after = time.time() - ttl
             rows = {}
-            for i in range(0, len(todo), 500):
-                chunk = todo[i:i + 500]
-                q = f"SELECT word, item, fetched_at FROM words WHERE level=? AND word IN ({','.join('?' * len(chunk))})"
-                for w, item, at in self.db.execute(q, [self._cache_level(), *chunk]):
-                    if at >= fresh_after:
-                        rows[w] = item
+            cache_level = self._cache_level()
+            if cache_level:
+                for i in range(0, len(todo), 500):
+                    chunk = todo[i:i + 500]
+                    q = f"SELECT word, item, fetched_at FROM words WHERE level=? AND word IN ({','.join('?' * len(chunk))})"
+                    for w, item, at in self.db.execute(q, [cache_level, *chunk]):
+                        if at >= fresh_after:
+                            rows[w] = item
             for w, item in rows.items():
                 self.mem[w] = self._entry(w, json.loads(item) if item else None)
                 self.stats["cached"] += 1
@@ -357,15 +374,53 @@ class RelingoLexicon:
                 out[w] = Entry(e.word, e.phonetic, e.translation, 0, "", hard=True, source="local")
         return out
 
-    def _cache_level(self) -> str:
-        # 登录与否结果不同（是否计入个人已掌握），分开缓存
-        return f"{self.level}|{'user' if self.authenticated else 'anon'}"
+    def _cache_level(self) -> Optional[str]:
+        # 登录结果含个人已掌握/生词本，按稳定账号隔离；token 轮换不能改变缓存命名空间。
+        if not self.authenticated:
+            return f"{self.level}|anon"
+        if not self._account_key_ready:
+            # 退避期间不能为了确定缓存命名空间而绕过 available() 发请求。
+            ok, _ = self.client.available()
+            if not ok:
+                return None
+            self._account_key_ready = True
+            try:
+                info = self.user_info()
+            except RelingoError as e:
+                if e.auth:
+                    self._warn("auth", "Relingo token 无效或已过期，改为未登录模式（运行 tw auth login 重新登录）")
+                    self.client.token, self.authenticated = None, False
+                    return f"{self.level}|anon"
+                self._warn("account", f"无法确认 Relingo 账号身份（{e}），本次不读写登录缓存")
+                return None
+            identity = ""
+            for key in ("_id", "id", "userId", "user_id"):
+                value = str(info.get(key) or "").strip()
+                if value:
+                    identity = f"id:{value}"
+                    break
+            if not identity:
+                email = str(info.get("email") or "").strip().lower()
+                if email:
+                    identity = f"email:{email}"
+            if not identity:
+                self._warn("account", "Relingo 账号信息缺少稳定用户 ID，本次不读写登录缓存")
+                return None
+            self._account_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            # 只保存 token 指纹和账号摘要；下次打开同一 token 无需联网即可命中个人缓存。
+            self.db.execute("INSERT OR REPLACE INTO account_tokens VALUES (?,?)",
+                            (self._token_fingerprint, self._account_key))
+            self.db.commit()
+        if not self._account_key:
+            return None
+        return f"{self.level}|account:{self._account_key}"
 
     def _fetch(self, words: list[str]):
         ok, why = self.client.available()
         if not ok:
             self._use_fallback(words, why)
             return
+        cache_level = self._cache_level()
         size = int(self.cfg["max_words_per_request"])
         for i in range(0, len(words), size):
             chunk = words[i:i + size]
@@ -386,9 +441,11 @@ class RelingoLexicon:
             for w in chunk:
                 it = items.get(w)
                 self.mem[w] = self._entry(w, it)
-                rows.append((self._cache_level(), w, json.dumps(it, ensure_ascii=False) if it else None, now))
-            self.db.executemany("INSERT OR REPLACE INTO words VALUES (?,?,?,?)", rows)
-            self.db.commit()
+                if cache_level:
+                    rows.append((cache_level, w, json.dumps(it, ensure_ascii=False) if it else None, now))
+            if rows:
+                self.db.executemany("INSERT OR REPLACE INTO words VALUES (?,?,?,?)", rows)
+                self.db.commit()
 
     def _use_fallback(self, words: list[str], why: str):
         self._warn("fallback", why)
