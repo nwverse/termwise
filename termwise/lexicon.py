@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Optional, Protocol
 
 # 去掉后词根仍成词、意思基本可推的前缀
@@ -113,7 +114,9 @@ class EcdictLexicon:
             raise FileNotFoundError(
                 f"找不到词库 {db_path}，先运行 scripts/fetch-ecdict.sh 构建"
             )
-        self.db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Encode the path as a file URI first, so '#', '?' and '%' stay part of the file name
+        uri = Path(db_path).resolve().as_uri()
+        self.db = sqlite3.connect(f"{uri}?mode=ro", uri=True)
         self.code_mode = code_mode
         self._cache: dict[str, Optional[Entry]] = {}
 
