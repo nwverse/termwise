@@ -17,6 +17,7 @@
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -134,7 +135,7 @@ def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int =
             buf += chunk
             *lines, buf = buf.split(b"\n")
             for l in lines:
-                batch.append(l.decode("utf-8", "replace") + "\n")
+                batch.append(l.decode("utf-8", "surrogateescape") + "\n")
             if batch and first is None:
                 first = time.time()
             if len(batch) < max_lines and (first is None or time.time() - first < max_wait):
@@ -143,7 +144,7 @@ def _batches(stream, idle: float = 0.15, max_wait: float = 1.0, max_lines: int =
             yield batch
             batch, first = [], None
     if buf:
-        batch.append(buf.decode("utf-8", "replace"))
+        batch.append(buf.decode("utf-8", "surrogateescape"))
     if batch:
         yield batch
 
@@ -153,7 +154,13 @@ def _read_all(files) -> str:
     否则前一个文件的末词会和下一个文件的首词合并成一个不存在的词。"""
     parts = []
     for f in files:
-        t = sys.stdin.read() if f == "-" else open(f, encoding="utf-8", errors="replace").read()
+        if f == "-":
+            if hasattr(sys.stdin, "reconfigure"):
+                sys.stdin.reconfigure(errors="surrogateescape")
+            t = sys.stdin.read()
+        else:
+            with open(f, encoding="utf-8", errors="surrogateescape") as fp:
+                t = fp.read()
         if t and not t.endswith("\n"):
             t += "\n"
         parts.append(t)
@@ -166,26 +173,27 @@ def cmd_annotate(args):
     files = args.files or ["-"]
     if args.list:
         return _print_list(_collect(ann, _read_all(files)), color, args.phonetic)
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(line_buffering=True, errors="surrogateescape")
     dangling = False  # 上一次输出是否停在行中（原行末尾无换行且没有注脚）
     for f in files:
         if dangling:  # 前一个文件末行无换行时补一个，免得和下一个文件首行粘连
             sys.stdout.write("\n")
             dangling = False
-        stream = sys.stdin if f == "-" else open(f, encoding="utf-8", errors="replace")
-        for batch in _batches(stream):
-            bodies = [raw.rstrip("\n") for raw in batch]
-            ann.prefetch([strip_ansi(b) for b in bodies])
-            for raw, body in zip(batch, bodies):
-                hits = ann.hits(strip_ansi(body))
-                if args.json:
-                    for h in hits:
-                        print(A.hit_json(h))
-                    continue
-                # 有注脚时注脚行总以换行结尾；只有原样透传的行才保留"原行无换行就不补"
-                end = "\n" if hits or raw.endswith("\n") else ""
-                sys.stdout.write(A.render_line(body, hits, color, args.phonetic) + end)
-                dangling = not end and bool(body)
+        with (contextlib.nullcontext(sys.stdin) if f == "-"
+              else open(f, encoding="utf-8", errors="surrogateescape", newline="")) as stream:
+            for batch in _batches(stream):
+                bodies = [raw.rstrip("\n") for raw in batch]
+                ann.prefetch([strip_ansi(b) for b in bodies])
+                for raw, body in zip(batch, bodies):
+                    hits = ann.hits(strip_ansi(body))
+                    if args.json:
+                        for h in hits:
+                            print(A.hit_json(h))
+                        continue
+                    # 有注脚时注脚行总以换行结尾；只有原样透传的行才保留"原行无换行就不补"
+                    end = "\n" if hits or raw.endswith("\n") else ""
+                    sys.stdout.write(A.render_line(body, hits, color, args.phonetic) + end)
+                    dangling = not end and bool(body)
 
 
 def cmd_screen(args):
