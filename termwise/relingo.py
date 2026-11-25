@@ -104,14 +104,31 @@ def _remove_credentials_file():
 
 
 def delete_token() -> bool:
+    """返回是否本来保存过 token。两处存储都会尝试删除，任一删除失败最后再抛 RuntimeError，
+    避免钥匙串失败时残留明文凭据文件，也避免把删除失败折叠成「没有保存过 token」。"""
+    errors: list[str] = []
+    deleted = False
     try:
         r = subprocess.run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE,
                             "-a", KEYCHAIN_ACCOUNT], capture_output=True, text=True)
         deleted = r.returncode == 0
+        not_found = r.returncode == 44 or "could not be found" in r.stderr.lower()
+        if not deleted and not not_found:
+            # errSecItemNotFound (44) 只是没存过；交互被拒、钥匙串锁死等才是删除失败
+            errors.append(f"删除钥匙串里的 token 失败：{r.stderr.strip() or f'exit {r.returncode}'}")
     except OSError:  # 非 macOS：没有 security 命令
         deleted = False
-    had_file = os.path.exists(credentials_path())
-    _remove_credentials_file()
+    path = credentials_path()
+    had_file = os.path.exists(path)
+    if had_file:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            had_file = False
+        except OSError as e:
+            errors.append(f"删除凭据文件 {path} 失败：{e}")
+    if errors:
+        raise RuntimeError("；".join(errors))
     return deleted or had_file
 
 
