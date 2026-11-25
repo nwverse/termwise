@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from termwise.textproc import extract_words, strip_ansi
@@ -26,6 +27,23 @@ class TextprocTest(unittest.TestCase):
         s = "the latency regression"
         for w in extract_words(s):
             self.assertEqual(s[w.start:w.end].lower(), w.norm)
+
+    def test_skips_start_at_the_token_edge(self):
+        # 左边界只限制起点：紧贴符号、数字或引号的 URL、邮箱、路径、文件名仍整段跳过。
+        for s in ("+https://example.com/ephemeral", "(https://example.com/ephemeral)",
+                  "git+https://example.com/ephemeral.git", "...https://example.com/ephemeral",
+                  "<first.last+tag@example.com>", "'src/latency.rs'", "a/docker-compose.override.yml",
+                  "\"latency-report.md\"", "$HOME/latency.d/ephemeral.conf",
+                  "\"$report-latency.txt\"", "$report-latency/ephemeral", "\"-20261106-latency.pdf\""):
+            self.assertEqual(norms(f"see {s} done"), ["see", "done"], s)
+
+    def test_long_tokens_stay_linear(self):
+        # 每种片段只该从左边界试一次；在 token 内逐位置重试时 32 KB 要 1～8 CPU 秒（#11）。
+        for unit in ("a.", "a+", "a-", "a_", "Aa", "ab.c-", "a.b@", "a--"):
+            line = unit * (32000 // len(unit))
+            start = time.process_time()
+            extract_words(line)
+            self.assertLess(time.process_time() - start, 0.5, unit)
 
 
 if __name__ == "__main__":
