@@ -38,11 +38,15 @@ class StubClient:
         return r
 
 
-def lexicon(tmp, responses, token=None):
-    lex = RelingoLexicon(dict(CFG), "relingo-Intermediate", tmp, None, token)
+def lexicon(tmp, responses, token=None, **cfg):
+    lex = RelingoLexicon(dict(CFG, **cfg), "relingo-Intermediate", tmp, None, token)
     lex.client = StubClient(responses)
     lex.client.token = token
     return lex
+
+
+def ephemeral(target):
+    return {"words": [{"word": "ephemeral", "translations": [{"pos": "ADJ", "target": target}]}]}
 
 
 class RelingoTest(unittest.TestCase):
@@ -136,6 +140,53 @@ class RelingoTest(unittest.TestCase):
             self.assertEqual([fn for fn, _ in b.client.calls], ["getUserInfo", "parseContent3"])
             legacy = b.db.execute("SELECT count(*) FROM words WHERE level LIKE '%|user'").fetchone()[0]
             self.assertEqual(legacy, 0)
+
+    def test_cache_is_partitioned_by_native_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zh = lexicon(tmp, [ephemeral("短暂")])
+            self.assertEqual(zh.lookup(["ephemeral"])["ephemeral"].translation, "adj. 短暂")
+
+            # 换释义语言后不能复用中文结果，必须按新语言重新请求（#28）。
+            ja = lexicon(tmp, [ephemeral("はかない")], native="ja")
+            self.assertEqual(ja.lookup(["ephemeral"])["ephemeral"].translation, "adj. はかない")
+            self.assertEqual([b["to"] for b in ja.client.bodies], ["ja"])
+
+            # 两种语言各用各的缓存，来回切换都不再请求。
+            for native, translation in (("zh", "adj. 短暂"), ("ja", "adj. はかない")):
+                again = lexicon(tmp, [], native=native)
+                self.assertEqual(again.lookup(["ephemeral"])["ephemeral"].translation, translation)
+                self.assertEqual(again.client.bodies, [])
+
+    def test_authenticated_cache_is_partitioned_by_native_language(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            zh = lexicon(tmp, [{"_id": "account-a"}, ephemeral("短暂")], "token-a")
+            self.assertEqual(zh.lookup(["ephemeral"])["ephemeral"].translation, "adj. 短暂")
+
+            # 账号映射与语言无关：不重新识别账号，只按新语言查词。
+            ja = lexicon(tmp, [ephemeral("はかない")], "token-a", native="ja")
+            self.assertEqual(ja.lookup(["ephemeral"])["ephemeral"].translation, "adj. はかない")
+            self.assertEqual([fn for fn, _ in ja.client.calls], ["parseContent3"])
+
+            back = lexicon(tmp, [], "token-a")
+            self.assertEqual(back.lookup(["ephemeral"])["ephemeral"].translation, "adj. 短暂")
+            self.assertEqual(back.client.calls, [])
+
+    def test_legacy_cache_without_language_is_invalidated(self):
+        item = json.dumps(ephemeral("短暂")["words"][0])
+        legacy_levels = ["relingo-Intermediate|anon", "relingo-Intermediate|account:account-a"]
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = lexicon(tmp, [])
+            seed.db.executemany("INSERT INTO words VALUES (?,?,?,?)",
+                                [(level, "ephemeral", item, time.time()) for level in legacy_levels])
+            seed.db.commit()
+
+            # 旧行没记录释义语言，不能归到当前语言：即使语言没变也重新请求。
+            zh = lexicon(tmp, [ephemeral("短暂")])
+            self.assertEqual(zh.lookup(["ephemeral"])["ephemeral"].translation, "adj. 短暂")
+            self.assertEqual(len(zh.client.bodies), 1)
+            levels = [level for level, in zh.db.execute("SELECT level FROM words")]
+            self.assertEqual(len(levels), 1)
+            self.assertNotIn(levels[0], legacy_levels)
 
     def test_failure_falls_back_without_caching(self):
         with tempfile.TemporaryDirectory() as tmp:

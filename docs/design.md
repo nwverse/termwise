@@ -152,7 +152,7 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
   - token 失效（`illegal user token` 或 code 2001/2002）时提示一次，然后改用未登录模式。
   - **钥匙串读写还没验证**：在开发用的沙盒会话里，`security` 报 "User interaction is not allowed"，写不进去；在用户自己的终端里应该能正常写入。用 `security` 写入的条目，再用 `security` 读取时不会弹授权框，hook 进程里读 token 不会卡住。
 - **解释器**：从 GUI 启动的程序（ChatGPT.app 里的 Codex、桌面端 Claude Code）PATH 很精简，`python3` 会指向系统自带的 3.9。`bin/tw` 会自己找 3.11+ 的解释器（`TW_PYTHON` 优先，然后是 Homebrew）。已用 `env -i PATH=/usr/bin:/bin` 模拟这种环境验证过。Claude Code mod 调用 tw 时也会把 `~/.local/bin` 和 Homebrew 补进 PATH。
-- **缓存**：`data/termwise-cache.db`，按「级别 + 是否登录」分开存。
+- **缓存**：`data/termwise-cache.db`，按「级别 + 释义语言（`native`）+ 身份（未登录 / 登录账号）」分开存。
   - 「不是生词」的结果也缓存，默认有效 12 小时（`cache_ttl_hours`）。在浏览器里新标的已掌握词，最多 12 小时同步到终端；`tw cache clear` 可以立即生效。
 - **限频**：同一批行只发一次请求。管道模式按停顿约 150ms，或最多 1 秒、200 行，攒成一批。两次请求至少间隔 2 秒，这个限制跨进程生效。
 - **退避**：遇到网络错误、HTTP 5xx 或 429，退避 30 秒，每次翻倍，最长 30 分钟，状态跨进程共享。退避期间完全不发请求，直接用 ECDICT，并提示一次。
