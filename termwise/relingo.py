@@ -306,8 +306,9 @@ class RelingoLexicon:
             CREATE TABLE IF NOT EXISTS account_tokens (token_hash TEXT PRIMARY KEY,
                                                        account_key TEXT NOT NULL);
         """)
-        # 旧的 |user 行无法判断属于哪个账号，只能失效，不能迁移给当前登录者。
-        self.db.execute("DELETE FROM words WHERE level LIKE '%|user'")
+        # 旧的 |user 行无法判断属于哪个账号，不含 |to: 的行无法判断是哪种释义语言，
+        # 只能失效，不能迁移给当前登录者或当前语言。
+        self.db.execute("DELETE FROM words WHERE level NOT LIKE '%|to:%'")
         self.db.commit()
         self.client = Client(cfg, self.db, token)
         self.authenticated = bool(token)
@@ -397,10 +398,14 @@ class RelingoLexicon:
                 out[w] = Entry(e.word, e.phonetic, e.translation, 0, "", hard=True, source="local")
         return out
 
+    def _namespace(self, identity: str) -> str:
+        # 释义语言（native）决定服务端返回的内容，和等级、身份一起隔离缓存。
+        return f"{self.level}|to:{self.cfg['native']}|{identity}"
+
     def _cache_level(self) -> Optional[str]:
         # 登录结果含个人已掌握/生词本，按稳定账号隔离；token 轮换不能改变缓存命名空间。
         if not self.authenticated:
-            return f"{self.level}|anon"
+            return self._namespace("anon")
         if not self._account_key_ready:
             # 退避期间不能为了确定缓存命名空间而绕过 available() 发请求。
             ok, _ = self.client.available()
@@ -413,7 +418,7 @@ class RelingoLexicon:
                 if e.auth:
                     self._warn("auth", "Relingo token 无效或已过期，改为未登录模式（运行 tw auth login 重新登录）")
                     self.client.token, self.authenticated = None, False
-                    return f"{self.level}|anon"
+                    return self._namespace("anon")
                 self._warn("account", f"无法确认 Relingo 账号身份（{e}），本次不读写登录缓存")
                 return None
             identity = ""
@@ -436,7 +441,7 @@ class RelingoLexicon:
             self.db.commit()
         if not self._account_key:
             return None
-        return f"{self.level}|account:{self._account_key}"
+        return self._namespace(f"account:{self._account_key}")
 
     def _fetch(self, words: list[str]):
         ok, why = self.client.available()
