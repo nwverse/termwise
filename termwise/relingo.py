@@ -25,6 +25,10 @@ KEYCHAIN_ACCOUNT = "token"
 EXTENSION_ID = "dpphkcfmnbkdpmgneljgdhfnccnhmfig"
 AUTH_ERRORS = {"invalid signature", "illegal user token", "missing user token"}
 AUTH_CODES = {2001, 2002}
+# 内存结果的最短寿命（秒）。cache_ttl_hours <= 0（不缓存）时内存结果若立即过期，同一批的
+# prefetch() 与逐行 hits() 会各发一次请求；保留一分钟覆盖一批及相邻几行，过后仍会重新查询。
+# 只作用于内存：磁盘缓存仍按 TTL 判定新鲜度，退避期间的回退结果仍在退避结束时到期。
+MEM_MIN_LIFETIME = 60.0
 POS = {"ADJ": "adj.", "NOUN": "n.", "VERB": "v.", "ADV": "adv.", "PRON": "pron.",
        "ADP": "prep.", "CONJ": "conj.", "CCONJ": "conj.", "NUM": "num.", "INTJ": "int.",
        "DET": "det.", "AUX": "aux.", "PROPN": "n."}
@@ -321,6 +325,8 @@ class RelingoLexicon:
             self._account_key = row[0] if row else None
         self._account_key_ready = bool(self._account_key)
         self.mem: dict[str, Optional[Entry]] = {}
+        # 内存结果的到期时刻：成功结果跟磁盘缓存一样按 TTL，回退结果到退避结束为止
+        self.mem_expires: dict[str, float] = {}
         self.warned: set[str] = set()
         self.stats = {"requests": 0, "cached": 0, "fallback": 0}
 
@@ -351,14 +357,26 @@ class RelingoLexicon:
         known = self.fallback.lookup(words)
         return [w for w in words if w in known]
 
+    def _ttl(self) -> float:
+        return float(self.cfg["cache_ttl_hours"]) * 3600
+
+    def _ttl_until(self, fetched_at: float, now: float) -> float:
+        return max(fetched_at + self._ttl(), now + MEM_MIN_LIFETIME)
+
+    def _remember(self, word: str, entry: Optional[Entry], until: float):
+        self.mem[word] = entry
+        self.mem_expires[word] = until
+
     def lookup(self, words: Iterable[str]) -> dict[str, Entry]:
         words = sorted({w for w in words if w})
         out: dict[str, Entry] = {}
-        todo = [w for w in words if w not in self.mem]
+        now = time.time()
+        # 已过期的内存结果重新走查询流程（流式进程会一直开着同一个实例）
+        todo = [w for w in words if w not in self.mem or self.mem_expires.get(w, 0) < now]
         # 1) 磁盘缓存
         if todo:
-            ttl = float(self.cfg["cache_ttl_hours"]) * 3600
-            fresh_after = time.time() - ttl
+            ttl = self._ttl()
+            fresh_after = now - ttl
             rows = {}
             cache_level = self._cache_level()
             if cache_level:
@@ -367,15 +385,16 @@ class RelingoLexicon:
                     q = f"SELECT word, item, fetched_at FROM words WHERE level=? AND word IN ({','.join('?' * len(chunk))})"
                     for w, item, at in self.db.execute(q, [cache_level, *chunk]):
                         if at >= fresh_after:
-                            rows[w] = item
-            for w, item in rows.items():
-                self.mem[w] = self._entry(w, json.loads(item) if item else None)
+                            rows[w] = (item, at)
+            for w, (item, at) in rows.items():
+                self._remember(w, self._entry(w, json.loads(item) if item else None),
+                               self._ttl_until(at, now))
                 self.stats["cached"] += 1
-            todo = [w for w in todo if w not in self.mem]
+            todo = [w for w in todo if w not in rows]
         # 2) 只把本地词典认识的词发给服务端；其余词不发，视为非生词
         send = self._sendable(todo)
         for w in set(todo) - set(send):
-            self.mem[w] = None
+            self._remember(w, None, float("inf"))
         # 3) 请求服务端
         if send:
             self._fetch(send)
@@ -463,7 +482,7 @@ class RelingoLexicon:
             rows = []
             for w in chunk:
                 it = items.get(w)
-                self.mem[w] = self._entry(w, it)
+                self._remember(w, self._entry(w, it), self._ttl_until(now, now))
                 if cache_level:
                     rows.append((cache_level, w, json.dumps(it, ensure_ascii=False) if it else None, now))
             if rows:
@@ -474,8 +493,13 @@ class RelingoLexicon:
         self._warn("fallback", why)
         self.stats["fallback"] += len(words)
         local = self.fallback.lookup(words) if self.fallback else {}
+        # 只放内存，不写缓存；退避结束后重新请求，没有退避（非临时错误）时按 TTL
+        now = time.time()
+        row = self.db.execute("SELECT value FROM state WHERE key='down_until'").fetchone()
+        down_until = float(row[0]) if row else 0.0
+        until = down_until if down_until > now else self._ttl_until(now, now)
         for w in words:
-            self.mem[w] = local.get(w)  # 只放内存，不写缓存
+            self._remember(w, local.get(w), until)
 
     def user_info(self) -> dict:
         return self.client.call("getUserInfo", {})
