@@ -273,37 +273,101 @@ def cmd_codex_hook(args):
         print(f"tw codex-hook: {e}", file=sys.stderr)
 
 
+def _is_json(raw: bytes) -> bool:
+    try:
+        json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return False
+    return True
+
+
+class _HistoryTail:
+    """增量读历史文件：每次 poll() 交出上次之后新增的记录行（原始字节，不含空行）。
+
+    历史文件没有清理命令，用户只能手动 rm 或 `: >`，所以文件被删除、重建或清空后要从头读，
+    不能拿旧偏移去读新文件。"""
+
+    HEAD_BYTES = 64  # 第一条记录的时间戳在这段里：清空后新写的文件，开头不会和原来一样
+
+    def __init__(self, path: str):
+        self.path = path
+        self._forget()
+
+    def _forget(self, file_id=None):
+        self.file_id = file_id  # (st_dev, st_ino)
+        self.pos = 0            # 已交出的字节数，之后的内容还没处理
+        self.head = b""         # 文件开头的 min(pos, HEAD_BYTES) 个字节
+
+    def poll(self) -> list[bytes]:
+        try:
+            f = open(self.path, "rb")
+        except FileNotFoundError:
+            self._forget()
+            return []
+        with f:
+            st = os.fstat(f.fileno())
+            file_id = (st.st_dev, st.st_ino)
+            # 换了文件、被截断，或者原地清空后又长回 pos 以上（inode 和大小都看不出来，只有开头变了）
+            if file_id != self.file_id or st.st_size < self.pos or f.read(len(self.head)) != self.head:
+                self._forget(file_id)
+            f.seek(self.pos)
+            data = f.read()
+            # 只处理到最后一个换行：写到一半的记录留到下一轮。
+            # 末尾没有换行但本身是完整 JSON 的（手工编辑过的文件）不用等，下一条记录会直接接在它后面。
+            end = data.rfind(b"\n") + 1
+            if data[end:].strip() and _is_json(data[end:]):
+                end = len(data)
+            if end:
+                self.pos += end
+                f.seek(0)
+                self.head = f.read(min(self.pos, self.HEAD_BYTES))
+        return [l for l in data[:end].split(b"\n") if l.strip()]
+
+
+def _history_count(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        n = -1
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"要非负整数，得到 {value!r}")
+    return n
+
+
 def cmd_history(args):
-    path = history_path()
+    tail = _HistoryTail(history_path())
     color = _color(args)
+    warned = False
 
-    def show(rec):
-        t = time.strftime("%H:%M", time.localtime(rec["ts"]))
-        head = f"── {t} {rec['agent']} ({len(rec['words'])})"
-        print(f"{A.DIM}{head}{A.RESET}" if color else head)
-        for w in rec["words"]:
-            star = "★" if w["starred"] else " "
-            print(f"{star}{A.CYAN}{w['lemma']}{A.RESET}  {w['translation']}" if color
-                  else f"{star}{w['lemma']}  {w['translation']}")
+    def show(raw: bytes):
+        nonlocal warned
+        try:
+            rec = json.loads(raw.decode("utf-8"))
+            t = time.strftime("%H:%M", time.localtime(rec["ts"]))
+            head = f"── {t} {rec['agent']} ({len(rec['words'])})"
+            out = [f"{A.DIM}{head}{A.RESET}" if color else head]
+            for w in rec["words"]:
+                star = "★" if w["starred"] else " "
+                out.append(f"{star}{A.CYAN}{w['lemma']}{A.RESET}  {w['translation']}" if color
+                           else f"{star}{w['lemma']}  {w['translation']}")
+        except (ValueError, KeyError, TypeError, OverflowError, OSError):
+            # 一条坏记录不该让长期开着的 tw history -f 退出
+            if not warned:
+                warned = True
+                print("tw: 历史文件里有无法解析的记录，已跳过", file=sys.stderr)
+            return
+        print("\n".join(out))
 
-    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
-    for l in lines[-args.n:]:
-        show(json.loads(l))
+    lines = tail.poll()
+    for raw in lines[-args.n:] if args.n > 0 else []:
+        show(raw)
     if not args.follow:
         return
     sys.stdout.reconfigure(line_buffering=True)
-    pos = os.path.getsize(path) if os.path.exists(path) else 0
     while True:
         time.sleep(0.5)
-        if not os.path.exists(path) or os.path.getsize(path) <= pos:
-            continue
-        with open(path, encoding="utf-8") as f:
-            f.seek(pos)
-            new = f.read()
-            pos = f.tell()
-        for l in new.splitlines():
-            if l.strip():
-                show(json.loads(l))
+        for raw in tail.poll():
+            show(raw)
 
 
 # ---------- 账号 / 配置 / 缓存 ----------
@@ -435,7 +499,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("history", help="Agent 回复生词历史")
     p.add_argument("-f", "--follow", action="store_true", help="持续显示新记录")
-    p.add_argument("-n", type=int, default=5, help="先显示最近 n 条（默认 5）")
+    p.add_argument("-n", type=_history_count, default=5, help="先显示最近 n 条（默认 5，0 表示不显示）")
     p.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p.set_defaults(fn=cmd_history)
 
