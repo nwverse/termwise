@@ -1,9 +1,11 @@
 import csv
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from termwise.store import UserStore
 
@@ -59,6 +61,35 @@ class UserStoreTest(unittest.TestCase):
             final = store(tmp)
             self.assertEqual(final.known, {"ephemeral", "latency"})
             self.assertEqual(final.star, {"idempotent"})
+
+    def test_symlinked_list_stays_a_link_and_keeps_its_mode(self):
+        # 词表放在 dotfiles / 同步盘、再链接进 data/user 时，保存要写到链接指向的文件。
+        with tempfile.TemporaryDirectory() as tmp:
+            sync, user = os.path.join(tmp, "sync"), os.path.join(tmp, "user")
+            os.makedirs(sync)
+            os.makedirs(user)
+            target, link = os.path.join(sync, "known.txt"), os.path.join(user, "known.txt")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("ephemeral\n")
+            os.chmod(target, 0o640)
+            os.symlink(os.path.join("..", "sync", "known.txt"), link)
+
+            store(tmp).mark(["idempotent"], "known")
+            self.assertTrue(os.path.islink(link))
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "ephemeral\nidempotent\n")
+            self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o640)
+            self.assertEqual(os.listdir(sync), ["known.txt"])
+
+    def test_failed_save_keeps_the_old_list_and_leaves_no_temp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store(tmp).mark(["ephemeral"], "known")
+            with mock.patch("termwise.store.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    store(tmp).mark(["idempotent"], "known")
+            self.assertEqual(store(tmp).known, {"ephemeral"})
+            self.assertEqual(sorted(os.listdir(os.path.join(tmp, "user"))),
+                             [".lock", "known.txt", "star.txt"])
 
     def test_concurrent_processes_keep_every_word(self):
         words = [f"word{chr(ord('a') + i)}" for i in range(8)]

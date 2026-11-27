@@ -8,6 +8,7 @@
 import contextlib
 import csv
 import os
+import shutil
 
 try:
     import fcntl
@@ -35,10 +36,19 @@ def _read_list(path: str) -> set[str]:
 
 def _write_list(path: str, words: set[str]):
     """先写临时文件再原子替换，读的一方不会看到写了一半的词表。"""
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("".join(w + "\n" for w in sorted(words)))
-    os.replace(tmp, path)
+    # 词表可能是指向 dotfiles / 同步盘的符号链接：替换它指向的文件，链接本身留着。
+    real = os.path.realpath(path)
+    tmp = f"{real}.{os.getpid()}.tmp"  # 和真实文件同目录，os.replace 才是原子的
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("".join(w + "\n" for w in sorted(words)))
+        if os.path.exists(real):
+            shutil.copymode(real, tmp)  # 替换已有文件时保留它的权限
+        os.replace(tmp, real)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
 
 
 class UserStore:
