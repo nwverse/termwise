@@ -180,7 +180,7 @@ translateParagraph, aiMeaning, getUserConfig, getUserInfo ...
 两者共用 tw 核心：
 
 - `tw agent --name <agent> --format json|text`：从 stdin 读回复，去掉 fenced 代码块后列出生词，结果追加到 `data/agent-words.jsonl`。
-- `tw history [-f]`：读取这份历史，适合放在 Ghostty 分屏里看，两个 Agent 共用。
+- `tw history [-f]`：读取这份历史，适合放在 Ghostty 分屏里看，两个 Agent 共用。历史只追加、没有清理命令：想清空就直接删除或清空这个文件，开着的 `tw history -f` 会从头接着读新文件。
 
 ### 5.1 Claude Code mod：`integrations/claude-code/termwise`
 
