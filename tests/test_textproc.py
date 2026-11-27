@@ -34,12 +34,15 @@ class TextprocTest(unittest.TestCase):
                   "git+https://example.com/ephemeral.git", "...https://example.com/ephemeral",
                   "<first.last+tag@example.com>", "'src/latency.rs'", "a/docker-compose.override.yml",
                   "\"latency-report.md\"", "$HOME/latency.d/ephemeral.conf",
-                  "\"$report-latency.txt\"", "$report-latency/ephemeral", "\"-20261106-latency.pdf\""):
+                  "\"$report-latency.txt\"", "$report-latency/ephemeral", "\"-20261106-latency.pdf\"",
+                  # 文件名 / 域名匹配停在连字符前时，后面的段接着跳过，不从 token 中间漏出来。
+                  "pool.sks-keyservers.net", "docs.my-latency.co.uk", "queue.tail-queue.head",
+                  "\"$report-v2.my-latency.json\""):
             self.assertEqual(norms(f"see {s} done"), ["see", "done"], s)
 
     def test_long_tokens_stay_linear(self):
         # 每种片段只该从左边界试一次；在 token 内逐位置重试时 32 KB 要 1～8 CPU 秒（#11）。
-        for unit in ("a.", "a+", "a-", "a_", "Aa", "ab.c-", "a.b@", "a--"):
+        for unit in ("a.", "a+", "a-", "a_", "Aa", "ab.c-", "a.b@", "a--", "a.ab-", "$a.ab-"):
             line = unit * (32000 // len(unit))
             start = time.process_time()
             extract_words(line)
