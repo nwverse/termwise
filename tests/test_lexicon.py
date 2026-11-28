@@ -26,6 +26,11 @@ ROWS = [
     ("disabuse", "28116", "28116", "gre", ""),
     ("unused", "8412", "8412", "cet6", ""),
     ("invalid", "3211", "3211", "cet6", ""),
+    # #13：前缀不是构词前缀的假派生词，自身词频必须保留
+    ("collect", "1222", "1222", "cet4", ""),
+    ("recollect", "14189", "14189", "cet4 cet6", ""),
+    ("very", "80", "80", "zk gk", ""),
+    ("revery", "43745", "43745", "", ""),
 ]
 
 
@@ -65,6 +70,17 @@ class EcdictLexiconTest(unittest.TestCase):
         for word in ("unused", "invalid"):
             with self.subTest(word=word):
                 self.assertFalse(self.is_hard(word))
+
+    def test_non_compositional_prefix_words_keep_own_rank(self):
+        # #13：recollect / revery 去掉前缀后虽是词根，但语义不能由前缀加词根推出，不能借词根词频。
+        self.assertEqual(self.lex.lookup(["recollect"])["recollect"].rank, 14189)
+        self.assertEqual(self.lex.lookup(["revery"])["revery"].rank, 43745)
+        store = UserStore(root=self.tmp.name, devwords=False)
+        for word, level in (("recollect", "intermediate"), ("recollect", "advanced"), ("revery", "expert")):
+            with self.subTest(word=word, level=level):
+                entry = self.lex.lookup([word])[word]
+                ann = Annotator(self.lex, store, LEVELS[level])
+                self.assertTrue(ann.is_hard(Word(word, word, 0, len(word)), entry)[0])
 
     def test_all_annotates_every_occurrence_on_one_line(self):
         # --all：同一行重复出现的生词也要逐个标注，不再按 lemma 逐行去重
