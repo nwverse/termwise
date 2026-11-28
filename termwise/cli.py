@@ -36,6 +36,8 @@ COMMANDS = {"annotate", "screen", "clip", "lookup", "agent", "history", "codex-h
             "config", "cache", "known", "star", "forget", "import-relingo", "build-db"}
 
 FENCE_RE = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.S | re.M)
+# 流式入口逐行维护围栏状态：``` 或 ~~~（至少三个）开一个围栏，同字符且不短于开启标记、后面只有空白的行关掉它。
+FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def _add_view_opts(p: argparse.ArgumentParser):
@@ -100,9 +102,23 @@ def _print_list(hits: list[A.Hit], color: bool, phonetic: bool):
             print(f"{star}{head}  {ph}{e.translation}")
 
 
+def _fence_after(line: str, fence: str | None) -> str | None:
+    """这一行之后仍打开的围栏；围栏外的 ``` / ~~~ 行打开它，同字符、不短于开启标记且后面只有空白的行关掉。"""
+    m = FENCE_LINE_RE.match(line)
+    if m is None:
+        return fence
+    mark, rest = m.group(1), m.group(2)
+    if fence is None:
+        return mark
+    if mark[0] == fence[0] and len(mark) >= len(fence) and not rest.strip():
+        return None
+    return fence
+
+
 def _collect(ann: A.Annotator, text: str) -> list[A.Hit]:
     ann.once = True
-    lines = [strip_ansi(l) for l in text.splitlines()]
+    # 与 agent_words 一样先去掉围栏代码块：--list 只查块外的词（#8）。
+    lines = [strip_ansi(l) for l in FENCE_RE.sub("", text).splitlines()]
     ann.prefetch(lines)
     return [h for l in lines for h in ann.hits(l)]
 
@@ -175,6 +191,7 @@ def cmd_annotate(args):
         return _print_list(_collect(ann, _read_all(files)), color, args.phonetic)
     sys.stdout.reconfigure(line_buffering=True, errors="surrogateescape")
     dangling = False  # 上一次输出是否停在行中（原行末尾无换行且没有注脚）
+    fence = None      # 流式输入里仍打开的围栏，跨 batch 保留（#8）
     for f in files:
         if dangling:  # 前一个文件末行无换行时补一个，免得和下一个文件首行粘连
             sys.stdout.write("\n")
@@ -183,9 +200,17 @@ def cmd_annotate(args):
               else open(f, encoding="utf-8", errors="surrogateescape", newline="")) as stream:
             for batch in _batches(stream):
                 bodies = [raw.rstrip("\n") for raw in batch]
-                ann.prefetch([strip_ansi(b) for b in bodies])
-                for raw, body in zip(batch, bodies):
-                    hits = ann.hits(strip_ansi(body))
+                plains = [strip_ansi(b) for b in bodies]
+                code = []
+                for plain in plains:
+                    delim = FENCE_LINE_RE.match(plain) is not None
+                    code.append(fence is not None or delim)
+                    if delim:
+                        fence = _fence_after(plain, fence)
+                # 围栏行与块内行原样透传、不加注脚；预取也用等长空白，免得把代码里的词发给 Relingo。
+                ann.prefetch([p if not c else " " * len(p) for p, c in zip(plains, code)])
+                for raw, body, plain, is_code in zip(batch, bodies, plains, code):
+                    hits = [] if is_code else ann.hits(plain)
                     if args.json:
                         for h in hits:
                             print(A.hit_json(h))
