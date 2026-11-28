@@ -1,5 +1,7 @@
 import argparse
+import contextlib
 import csv
+import io
 import os
 import subprocess
 import tempfile
@@ -7,6 +9,7 @@ import unittest
 from unittest import mock
 
 from termwise import cli
+from termwise import relingo as R
 from termwise.lexicon import build_db
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -90,3 +93,42 @@ class StreamTrailingNewlineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LookupFallbackTest(unittest.TestCase):
+    """#18：Relingo 请求失败时不能把本地兜底当成「不是生词」。"""
+
+    def _run(self, d, response):
+        csv_path = os.path.join(d, "ecdict.csv")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["word", "phonetic", "translation", "bnc", "frq", "tag", "exchange"])
+            w.writerow(["ephemeral", "ih-fem-er-uhl", "adj. 短暂", "12000", "12000", "gre", ""])
+        data = os.path.join(d, "data")
+        build_db(csv_path, os.path.join(data, "ecdict.db"))
+        env = {"TW_DATA": data, "TW_CONFIG": os.path.join(d, "missing.toml")}
+        out, err = io.StringIO(), io.StringIO()
+        call = (mock.patch.object(R.Client, "call", side_effect=response) if isinstance(response, Exception)
+                else mock.patch.object(R.Client, "call", return_value=response))
+        with mock.patch.object(R, "get_token", return_value=None), \
+             mock.patch.object(R.Client, "available", return_value=(True, "")), \
+             call, \
+             mock.patch.dict(os.environ, env, clear=False), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["lookup", "-s", "relingo", "--color", "never", "ephemeral"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_failed_request_reports_unknown_not_not_a_word(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, err = self._run(d, R.RelingoError("mock offline", transient=True))
+        self.assertEqual(rc, 0)
+        self.assertIn("请求失败", err)
+        self.assertNotIn("Relingo：不是生词", out)
+        self.assertIn("状态未知", out)
+        self.assertIn("本地：adj. 短暂", out)
+
+    def test_successful_negative_still_says_not_a_word(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, _ = self._run(d, {"words": [{"word": "ephemeral", "mastered": True}]})
+        self.assertEqual(rc, 0)
+        self.assertIn("Relingo：不是生词", out)
