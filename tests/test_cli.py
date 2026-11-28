@@ -90,3 +90,53 @@ class StreamTrailingNewlineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FencedCodeTest(unittest.TestCase):
+    """#8：普通 tw / --list 不能查或标注围栏代码块里的词，原文仍要透传。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = cls.tmp.name
+        csv_path = os.path.join(d, "ecdict.csv")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["word", "phonetic", "translation", "bnc", "frq", "tag", "exchange"])
+            w.writerow(["ephemeral", "", "adj. 短暂", "99999", "99999", "", ""])
+            w.writerow(["serendipity", "", "n. 机缘巧合", "99999", "99999", "", ""])
+        build_db(csv_path, os.path.join(d, "ecdict.db"))
+        cls.env = dict(os.environ, TW_DATA=d, TW_CONFIG=os.path.join(d, "none.toml"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _tw(self, *args, stdin=None):
+        r = subprocess.run([TW, "-s", "local", "--color", "never", *args],
+                           input=stdin, capture_output=True, text=True, env=self.env, check=True)
+        return r.stdout
+
+    def test_list_skips_fenced_code(self):
+        text = ("ephemeral outside\n```python\nserendipity inside\n```\n"
+                "~~~text\nserendipity tilde\n~~~\n")
+        out = self._tw("--list", stdin=text)
+        self.assertIn("ephemeral", out)
+        self.assertNotIn("serendipity", out)
+
+    def test_pipe_passes_code_through_without_footnote(self):
+        text = "ephemeral outside\n```python\nserendipity inside\n```\n"
+        out = self._tw(stdin=text)
+        self.assertIn("serendipity inside", out)
+        self.assertNotIn("↳ serendipity", out)
+        self.assertIn("↳ ephemeral", out)
+
+    def test_fence_state_crosses_a_batch(self):
+        # 200 行一批：围栏恰好开在第一批末尾，块内词落在第二批，状态必须跨 batch 保留。
+        text = "zzzz\n" * 198 + "```\nserendipity inside\n```\nephemeral after\n"
+        path = os.path.join(self.tmp.name, "long.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        out = self._tw(path)
+        self.assertNotIn("↳ serendipity", out)
+        self.assertIn("↳ ephemeral", out)
