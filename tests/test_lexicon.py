@@ -12,20 +12,29 @@ from termwise.textproc import Word
 
 FIELDS = ["word", "phonetic", "translation", "bnc", "frq", "tag", "exchange"]
 
-# (word, bnc, frq, tag, exchange)
+# (word, translation, bnc, frq, tag, exchange)
 ROWS = [
-    ("toward", "384", "384", "zk gk cet4", ""),
-    ("miss", "833", "833", "zk gk", ""),
-    ("prove", "671", "671", "gk cet4", ""),
-    ("abuse", "1540", "1540", "cet4", ""),
-    ("use", "87", "87", "zk gk", "d:used/p:used"),
-    ("valid", "2100", "2100", "cet4", ""),
-    ("untoward", "18475", "18475", "gre", ""),
-    ("remiss", "24156", "24156", "gre", ""),
-    ("reprove", "21465", "21465", "gre", ""),
-    ("disabuse", "28116", "28116", "gre", ""),
-    ("unused", "8412", "8412", "cet6", ""),
-    ("invalid", "3211", "3211", "cet6", ""),
+    ("toward", "a. toward 的释义", "384", "384", "zk gk cet4", ""),
+    ("miss", "a. miss 的释义", "833", "833", "zk gk", ""),
+    ("prove", "a. prove 的释义", "671", "671", "gk cet4", ""),
+    ("abuse", "a. abuse 的释义", "1540", "1540", "cet4", ""),
+    ("use", "a. use 的释义", "87", "87", "zk gk", "d:used/p:used"),
+    ("valid", "a. valid 的释义", "2100", "2100", "cet4", ""),
+    ("untoward", "a. untoward 的释义", "18475", "18475", "gre", ""),
+    ("remiss", "a. remiss 的释义", "24156", "24156", "gre", ""),
+    ("reprove", "a. reprove 的释义", "21465", "21465", "gre", ""),
+    ("disabuse", "a. disabuse 的释义", "28116", "28116", "gre", ""),
+    ("unused", "a. unused 的释义", "8412", "8412", "cet6", ""),
+    ("invalid", "a. invalid 的释义", "3211", "3211", "cet6", ""),
+    (
+        "ax",
+        "n. 斧头\\nvt. 用斧削或砍, 削减",
+        "28327",
+        "11322",
+        "cet4",
+        "i:axing/s:axes/3:axes/p:axed/d:axed",
+    ),
+    ("axes", "pl. 斧头, 轴, 轴线\\n[计] 坐标轴", "0", "0", "", "0:ax/1:s3"),
 ]
 
 
@@ -37,8 +46,8 @@ class EcdictLexiconTest(unittest.TestCase):
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow(FIELDS)
-            for word, bnc, frq, tag, exchange in ROWS:
-                w.writerow([word, "", f"a. {word} 的释义", bnc, frq, tag, exchange])
+            for word, translation, bnc, frq, tag, exchange in ROWS:
+                w.writerow([word, "", translation, bnc, frq, tag, exchange])
         db_path = os.path.join(cls.tmp.name, "db", "ecdict.db")
         build_db(csv_path, db_path)
         cls.lex = EcdictLexicon(db_path)
@@ -65,6 +74,20 @@ class EcdictLexiconTest(unittest.TestCase):
         for word in ("unused", "invalid"):
             with self.subTest(word=word):
                 self.assertFalse(self.is_hard(word))
+
+    def test_inflected_form_keeps_missing_computer_sense(self):
+        # issue #14：axes 自己词条里的 [计] 义项不能因归并到 ax 而丢失
+        axes = self.lex.lookup(["axes"])["axes"]
+        self.assertEqual(axes.word, "ax")
+        self.assertEqual(axes.rank, 11322)
+        self.assertIn("斧头", axes.translation)
+        self.assertIn("[计] 坐标轴", axes.translation)
+
+        # 普通变形仍完全沿用原形词条，不因上面的合并逻辑改变
+        axing = self.lex.lookup(["axing"])["axing"]
+        self.assertEqual(axing.word, "ax")
+        self.assertEqual(axing.rank, 11322)
+        self.assertNotIn("[计]", axing.translation)
 
     def test_all_annotates_every_occurrence_on_one_line(self):
         # --all：同一行重复出现的生词也要逐个标注，不再按 lemma 逐行去重
