@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -325,3 +326,46 @@ class OnlyDictionaryWordsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenStorageTest(unittest.TestCase):
+    """#32：文件回退登录成功后，旧钥匙串 token 不能继续覆盖新账号。"""
+
+    def test_file_fallback_beats_readable_stale_keychain(self):
+        old, new = "synthetic-old", "synthetic-new"
+
+        def security(args, **kwargs):
+            if args[:2] == ["security", "-i"]:
+                return subprocess.CompletedProcess(args, 1, "", "write denied")
+            if args[:2] == ["security", "find-generic-password"]:
+                return subprocess.CompletedProcess(args, 0, old + "\n", "")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"TW_CONFIG": os.path.join(d, "config.toml")}), \
+             mock.patch.object(relingo.subprocess, "run", side_effect=security):
+            where = relingo.save_token(new, insecure_storage=True)
+            self.assertIn("文件", where)
+            # 新进程同样选中新 token：不依赖进程内状态。
+            self.assertEqual(relingo.get_token(), new)
+            self.assertIn("文件", relingo.token_storage())
+
+    def test_keychain_save_clears_the_file_preference(self):
+        new = "synthetic-keychain-token"
+        state = {"keychain": None}
+
+        def security(args, **kwargs):
+            if args[:2] == ["security", "-i"]:
+                state["keychain"] = new
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[:2] == ["security", "find-generic-password"]:
+                return subprocess.CompletedProcess(args, 0, (state["keychain"] or "") + "\n", "")
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"TW_CONFIG": os.path.join(d, "config.toml")}), \
+             mock.patch.object(relingo.subprocess, "run", side_effect=security):
+            relingo._set_file_preferred(True)
+            relingo.save_token(new)
+            self.assertEqual(relingo.get_token(), new)
+            self.assertFalse(os.path.exists(relingo._file_preferred_path()))

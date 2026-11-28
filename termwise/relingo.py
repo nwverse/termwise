@@ -52,10 +52,31 @@ def _keychain_get() -> Optional[str]:
     return r.stdout.strip() or None
 
 
-def get_token() -> Optional[str]:
-    tok = _keychain_get()
-    if tok:
-        return tok
+def _file_preferred_path() -> str:
+    """标记「最近一次保存落到文件」：回退存文件后，旧钥匙串条目不能再盖住新账号（#32）。"""
+    return credentials_path() + ".preferred"
+
+
+def _file_preferred() -> bool:
+    return os.path.exists(_file_preferred_path())
+
+
+def _set_file_preferred(on: bool) -> None:
+    path = _file_preferred_path()
+    if not on:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("file\n")
+    os.chmod(path, 0o600)
+
+
+def _file_token() -> Optional[str]:
     try:
         with open(credentials_path(), encoding="utf-8") as f:
             return f.read().strip() or None
@@ -63,7 +84,21 @@ def get_token() -> Optional[str]:
         return None
 
 
+def get_token() -> Optional[str]:
+    # 上次保存明确落到文件时，文件里的新 token 优先于可能残留的旧钥匙串条目（#32）。
+    if _file_preferred():
+        tok = _file_token()
+        if tok:
+            return tok
+    tok = _keychain_get()
+    if tok:
+        return tok
+    return _file_token()
+
+
 def token_storage() -> str:
+    if _file_preferred() and _file_token():
+        return f"文件 {credentials_path()}"
     if _keychain_get():
         return "钥匙串"
     return f"文件 {credentials_path()}" if os.path.exists(credentials_path()) else "无"
@@ -82,6 +117,7 @@ def save_token(token: str, insecure_storage: bool = False) -> str:
         ok, err = False, "找不到 security 命令（非 macOS 无钥匙串）"
     if ok and _keychain_get() == token:
         _remove_credentials_file()
+        _set_file_preferred(False)
         return "钥匙串（service=termwise-relingo）"
     if not insecure_storage:
         raise RuntimeError("写入钥匙串失败（当前环境可能无法访问钥匙串）："
@@ -93,14 +129,16 @@ def save_token(token: str, insecure_storage: bool = False) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(token + "\n")
     os.chmod(path, 0o600)
+    _set_file_preferred(True)
     return f"文件 {path}（权限 600）"
 
 
 def _remove_credentials_file():
-    try:
-        os.remove(credentials_path())
-    except OSError:
-        pass
+    for p in (credentials_path(), _file_preferred_path()):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def delete_token() -> bool:
@@ -120,6 +158,7 @@ def delete_token() -> bool:
         deleted = False
     path = credentials_path()
     had_file = os.path.exists(path)
+    _set_file_preferred(False)
     if had_file:
         try:
             os.remove(path)
