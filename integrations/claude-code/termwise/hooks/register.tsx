@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Turn, Word } from '../types'
+import { annotate } from './annotate'
 
 // Each Claude reply goes through `tw agent` (fenced code stripped, words
 // judged by Relingo with the local dictionary as fallback); the result is kept
@@ -30,32 +31,6 @@ const isInlineHidden = atom(
 function gloss(translation: string): string {
   const s = translation.replace(/^\s*(\[[^\]]*\]|[a-z]+\.)\s*/i, '')
   return (s.split(/[，,；;]/)[0] ?? '').trim()
-}
-
-// Markdown spans never annotated: fenced and inline code, link targets, URLs.
-const SKIP = /```[\s\S]*?(?:```|$)|`[^`\n]*`|\]\([^)]*\)|https?:\/\/\S+/g
-const WORD = /[A-Za-z][A-Za-z'-]*[A-Za-z]/g
-
-// Like the Relingo extension: "meticulous" → "meticulous（细致）", first
-// occurrence of each word only, prose only.
-export function annotate(text: string, dict: Map<string, string>): string {
-  if (dict.size === 0) return text
-  const seen = new Set<string>()
-  const mark = (prose: string) =>
-    prose.replace(WORD, w => {
-      const key = w.toLowerCase()
-      const g = dict.get(key)
-      if (!g || seen.has(key)) return w
-      seen.add(key)
-      return `${w}（${g}）`
-    })
-  let out = ''
-  let last = 0
-  for (const m of text.matchAll(SKIP)) {
-    out += mark(text.slice(last, m.index)) + m[0]
-    last = (m.index ?? 0) + m[0].length
-  }
-  return out + mark(text.slice(last))
 }
 
 // Terminal cells a string takes: CJK and full-width characters count two.
