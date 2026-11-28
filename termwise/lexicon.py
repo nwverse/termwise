@@ -14,6 +14,10 @@ from typing import Iterable, Optional, Protocol
 # 去掉后词根仍成词、意思基本可推的前缀
 _PREFIXES = ("non", "un", "re", "dis", "mis", "in", "im")
 
+# 前缀相同但语义不能由「前缀 + 词根」推出的词：保留自身词频，不借词根（#13）。
+# 只列已核对的词，保持可审计；新增词先在这里补一行并加回归测试。
+_FALSE_PREFIX_WORDS = frozenset({"recollect", "revery"})
+
 # ECDICT exchange 字段里表示「本词的变形」的类型码：
 # p 过去式, d 过去分词, i 现在分词, 3 第三人称单数, s 复数, r 比较级, t 最高级
 _FORM_CODES = set("pdi3srt")
@@ -130,6 +134,8 @@ class EcdictLexicon:
         ).fetchone()
 
     def _derived_rank(self, word: str, rank: int) -> int:
+        if word in _FALSE_PREFIX_WORDS:
+            return rank
         # 自身带 gre 标签的词（untoward / remiss / reprove / disabuse）意思不能从
         # 前缀 + 词根推出，不借词根词频，否则永远不会被标注
         row = self._get(word)
