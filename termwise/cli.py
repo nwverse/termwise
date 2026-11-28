@@ -221,8 +221,16 @@ def cmd_lookup(args):
         base = remote or e
         state = "★生词本" if store.is_star(n, base.word) else "已掌握" if store.is_known(n, base.word) else ""
         if is_remote:
-            src = (f"Relingo：{'★' if remote.starred else ''}生词 {remote.translation}" if remote and remote.hard
-                   else "Relingo：不是生词（低于级别或已掌握）")
+            if remote is None:
+                src = "Relingo：状态未知（没有返回判定）"
+            elif remote.source != "relingo":
+                # 请求失败后的本地兜底（hard=None）或本地术语补充（hard=True）都不能冒充 Relingo 判定（#18）。
+                src = ("Relingo：状态未知（本次请求失败，已用本地词库）" if remote.hard is None
+                       else "Relingo：未查询（本地术语补充）")
+            elif remote.hard:
+                src = f"Relingo：{'★' if remote.starred else ''}生词 {remote.translation}"
+            else:
+                src = "Relingo：不是生词（低于级别或已掌握）"
             print(f"{base.word} /{base.phonetic}/  {src} {state}".rstrip())
         if e:
             rank = e.rank or "未收录"
