@@ -46,8 +46,14 @@ def _short(sense: str, n: int = 3) -> str:
     return "，".join(p for p in parts[:n] if p)
 
 
-def _pick_translation(raw: str, code_mode: bool = True, width: int = 40) -> str:
-    """ECDICT 的释义按词性分行（字面量 \\n）。code mode 下把 [计] 义项附在通用义后面。"""
+def _pick_translation(
+    raw: str, code_mode: bool = True, width: int = 40, fallback_tech_raw: str = ""
+) -> str:
+    """ECDICT 的释义按词性分行（字面量 \\n）。code mode 下把 [计] 义项附在通用义后面。
+
+    fallback_tech_raw 只在 raw 没有 [计] 行时提供一个补充义项，用于词形自身词条
+    含有原形词条缺失的计算机释义。
+    """
     lines = [l.strip() for l in raw.replace("\\n", "\n").splitlines() if l.strip()]
     lines = [l for l in lines if not l.startswith("[网络]")] or lines
     general = [l for l in lines if not l.startswith("[")]
@@ -56,6 +62,11 @@ def _pick_translation(raw: str, code_mode: bool = True, width: int = 40) -> str:
         else (lines[0] if lines else "")
     if code_mode:
         tech = next((l for l in lines if l.startswith("[计]")), None)
+        if tech is None and fallback_tech_raw:
+            fallback_lines = [
+                l.strip() for l in fallback_tech_raw.replace("\\n", "\n").splitlines() if l.strip()
+            ]
+            tech = next((l for l in fallback_lines if l.startswith("[计]")), None)
         if tech and tech not in chosen:
             chosen = f"{chosen}｜{_short(tech, 2)}" if general else tech
     chosen = re.sub(r"\s+", " ", chosen)
@@ -147,16 +158,24 @@ class EcdictLexicon:
         if form in self._cache:
             return self._cache[form]
         base = self.lemma(form)
-        row = self._get(base) or self._get(form)
+        base_row = self._get(base)
+        form_row = self._get(form)
+        row = base_row or form_row
         entry = None
         if row:
             word, phonetic, trans, rank, tags = row
             if not rank and base != form:
                 # 原形没词频时退回词形本身的词频
-                r2 = self._get(form)
-                rank = r2[3] if r2 else 0
+                rank = form_row[3] if form_row else 0
             rank = self._derived_rank(word, rank)
-            entry = Entry(word, phonetic or "", _pick_translation(trans, self.code_mode), rank, tags or "")
+            fallback_tech_raw = form_row[2] if base_row and form_row and base != form else ""
+            entry = Entry(
+                word,
+                phonetic or "",
+                _pick_translation(trans, self.code_mode, fallback_tech_raw=fallback_tech_raw),
+                rank,
+                tags or "",
+            )
         self._cache[form] = entry
         return entry
 
